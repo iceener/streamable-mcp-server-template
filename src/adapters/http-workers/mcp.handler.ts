@@ -143,6 +143,7 @@ function buildProviderRefreshConfig(
     clientId: config.PROVIDER_CLIENT_ID,
     clientSecret: config.PROVIDER_CLIENT_SECRET,
     accountsUrl: config.PROVIDER_ACCOUNTS_URL,
+    tokenEndpointPath: config.OAUTH_TOKEN_URL,
   };
 }
 
