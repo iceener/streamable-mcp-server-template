@@ -1,136 +1,129 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { getServerWithInternals } from '../mcp/server-internals.js';
-import { logger } from '../utils/logger.js';
-import { paginateArray } from '../utils/pagination.js';
-import { configResource } from './config.resource.js';
-import { docsResource } from './docs.resource.js';
-import { logoResource, logoSvgResource } from './logo.resource.js';
-import { startStatusUpdates, statusResource } from './status.resource.js';
+import {
+  type McpServer,
+  ResourceNotFoundError,
+  ResourceTemplate,
+} from '@modelcontextprotocol/server';
+import type { AppConfig } from '../../config/env.js';
+import { SERVER_ICON_SVG, serverIcons } from '../../config/metadata.js';
 
-const resources = [
-  configResource,
-  docsResource,
-  logoResource,
-  logoSvgResource,
-  statusResource,
-];
+const collections = ['books', 'movies', 'music'] as const;
+const itemIds = ['1', '2', '3'] as const;
 
-export function registerResources(server: McpServer): void {
-  // Register each resource individually using the high-level API
-  for (const resource of resources) {
-    server.registerResource(
-      resource.name,
-      resource.uri,
-      {
-        title: resource.name,
-        description: resource.description,
-        mimeType: resource.mimeType,
-        annotations: {
-          audience: ['user', 'assistant'],
-          priority: 0.5,
-          lastModified: new Date().toISOString(),
+const templateGuide = `# MCP server template
+
+This server uses the v2 TypeScript SDK and the stateless 2026-07-28 protocol.
+
+- Tools use complete Standard Schema objects (Zod v4 in this template).
+- Modern HTTP requests are independent and carry protocol metadata per request.
+- Cancellation uses the HTTP request stream; progress stays on that request's SSE response.
+- OAuth, when enabled, is enforced at the Resource Server boundary.
+`;
+
+export function registerResources(server: McpServer, config: AppConfig): void {
+  const icons = serverIcons(config);
+
+  server.registerResource(
+    'template-guide',
+    'docs://mcp-template/guide',
+    {
+      title: 'Template Guide',
+      description: 'A concise guide to this MCP server template.',
+      mimeType: 'text/markdown',
+      icons,
+      annotations: { audience: ['user', 'assistant'], priority: 0.8 },
+      cacheHint: { ttlMs: 3_600_000, cacheScope: 'public' },
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          name: 'template-guide.md',
+          title: 'Template Guide',
+          mimeType: 'text/markdown',
+          text: templateGuide,
         },
-      },
-      resource.handler,
-    );
-  }
+      ],
+    }),
+  );
 
-  // Add a ResourceTemplate example with completion and listing
-  // URI format: example://items/{collection}/{id}
-  const exampleTemplate = new ResourceTemplate('example://items/{collection}/{id}', {
-    list: async () => {
-      const items = [
+  server.registerResource(
+    'server-icon',
+    'asset://mcp-template/icon.svg',
+    {
+      title: 'Server Icon',
+      description: 'The SVG icon advertised in MCP metadata.',
+      mimeType: 'image/svg+xml',
+      icons,
+      annotations: { audience: ['user', 'assistant'], priority: 0.3 },
+      cacheHint: { ttlMs: 86_400_000, cacheScope: 'public' },
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          name: 'icon.svg',
+          title: 'Server Icon',
+          mimeType: 'image/svg+xml',
+          text: SERVER_ICON_SVG,
+        },
+      ],
+    }),
+  );
+
+  const itemTemplate = new ResourceTemplate('example://items/{collection}/{id}', {
+    list: async () => ({
+      resources: [
         { collection: 'books', id: '1' },
         { collection: 'books', id: '2' },
         { collection: 'movies', id: '1' },
-      ];
-      const page = paginateArray(items, undefined, 100);
-      return {
-        resources: page.data.map(({ collection, id }) => ({
-          uri: `example://items/${collection}/${id}`,
-          name: `${collection}-${id}.json`,
-          title: `${collection} ${id}`,
-          mimeType: 'application/json',
-          annotations: {
-            audience: ['assistant'],
-            priority: 0.6,
-            lastModified: new Date().toISOString(),
-          },
-        })),
-        nextCursor: page.nextCursor,
-      };
-    },
+      ].map(({ collection, id }) => ({
+        uri: `example://items/${collection}/${id}`,
+        name: `${collection}-${id}.json`,
+        title: `${collection} ${id}`,
+        description: 'Example templated JSON resource.',
+        mimeType: 'application/json',
+        icons,
+      })),
+    }),
     complete: {
-      collection: async (_value: string) => ['books', 'movies', 'music'],
-      id: async (_value: string) => ['1', '2', '3'],
+      collection: async (value) =>
+        collections.filter((collection) => collection.startsWith(value)),
+      id: async (value) => itemIds.filter((id) => id.startsWith(value)),
     },
   });
 
   server.registerResource(
-    'example-items',
-    exampleTemplate,
+    'example-item',
+    itemTemplate,
     {
-      title: 'Example Items',
-      description: 'Dynamic items accessible by collection and id',
+      title: 'Example Item',
+      description: 'Read an example item by collection and ID.',
       mimeType: 'application/json',
+      icons,
+      annotations: { audience: ['assistant'], priority: 0.5 },
+      cacheHint: { ttlMs: 60_000, cacheScope: 'public' },
     },
-    async (_uri, variables) => {
-      const { collection, id } = variables as {
-        collection: string;
-        id: string;
-      };
+    async (uri, variables) => {
+      const collection = String(variables.collection);
+      const id = String(variables.id);
+      if (
+        !collections.includes(collection as (typeof collections)[number]) ||
+        !itemIds.includes(id as (typeof itemIds)[number])
+      ) {
+        throw new ResourceNotFoundError(uri.href);
+      }
+
       return {
         contents: [
           {
-            uri: `example://items/${collection}/${id}`,
+            uri: uri.href,
             name: `${collection}-${id}.json`,
             title: `${collection} ${id}`,
             mimeType: 'application/json',
             text: JSON.stringify({ collection, id, ok: true }),
-            annotations: {
-              audience: ['assistant'],
-              priority: 0.6,
-              lastModified: new Date().toISOString(),
-            },
           },
         ],
       };
     },
   );
-
-  // Start status resource updates (for subscription notifications)
-  startStatusUpdates(server);
-
-  logger.info('resources', {
-    message: `Registered ${resources.length} resources`,
-    resourceUris: resources.map((r) => r.uri),
-  });
-}
-
-/**
- * Emit resource update notification.
- * Per MCP spec, the notification only includes the URI.
- *
- * @param server - The MCP server instance
- * @param uri - The URI of the updated resource
- */
-export function emitResourceUpdated(server: McpServer, uri: string): void {
-  try {
-    getServerWithInternals(server).sendResourceUpdated?.({ uri });
-  } catch (error) {
-    console.warn('Failed to send resource updated notification:', error);
-  }
-  logger.debug('resources', {
-    message: 'Resource updated notification sent',
-    uri,
-  });
-}
-
-// Emit listChanged when resources are updated
-export function emitResourcesListChanged(server: McpServer): void {
-  server.sendResourceListChanged();
-  logger.debug('resources', {
-    message: 'Resources list changed notification sent',
-  });
 }

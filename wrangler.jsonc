@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mcp-template-worker",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-07-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    // Local-safe defaults. Replace the URL and allowlists before production deploy.
+    "NODE_ENV": "development",
+    "MCP_NAME": "mcp-server-template",
+    "MCP_TITLE": "MCP Server Template",
+    "MCP_VERSION": "1.0.0",
+    "MCP_PUBLIC_URL": "http://localhost:8787/mcp",
+    "MCP_ALLOWED_HOSTS": "localhost,127.0.0.1,[::1]",
+    "MCP_ALLOWED_ORIGIN_HOSTNAMES": "localhost,127.0.0.1,[::1]",
+    "MCP_LEGACY_MODE": "stateless",
+    "MCP_MAX_REQUEST_BYTES": "1048576",
+    "AUTH_ENABLED": "false",
+    "LOG_LEVEL": "info"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  }
+}

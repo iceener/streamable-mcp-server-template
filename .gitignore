@@ -8,6 +8,7 @@ pnpm-debug.log*
 bun-debug.log*
 lerna-debug.log*
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+*.cpuprofile
 
 ## Runtime data / pids
 pids
@@ -53,7 +54,6 @@ out/
 .wrangler/
 .mf/
 .dev.vars
-wrangler.toml
 
 ## Framework-specific (safe to ignore if unused)
 .next/

@@ -1,71 +1,114 @@
-// Unified MCP server entry point (Node.js/Hono) using shared modules
-// From Spotify MCP
-
-import type { HttpBindings } from '@hono/node-server';
+import {
+  type AuthInfo,
+  type OAuthTokenVerifier,
+  oauthMetadataResponse,
+  type ServerEventBus,
+  type ServerNotifier,
+} from '@modelcontextprotocol/server';
 import { Hono } from 'hono';
-import { createMcpSecurityMiddleware } from '../adapters/http-hono/middleware.security.js';
-import { buildDiscoveryRoutes } from '../adapters/http-hono/routes.discovery.js';
-import { config } from '../config/env.js';
-import { serverMetadata } from '../config/metadata.js';
-import { contextRegistry } from '../core/context.js';
-import { buildServer } from '../core/mcp.js';
-import { parseConfig } from '../shared/config/env.js';
-import type { ContextResolver } from '../shared/tools/registry.js';
-import { createAuthHeaderMiddleware } from './middlewares/auth.js';
-import { corsMiddleware } from './middlewares/cors.js';
-import { healthRoutes } from './routes/health.js';
-import { buildMcpRoutes } from './routes/mcp.js';
+import type { AppConfig } from '../config/env.js';
+import { SERVER_ICON_SVG } from '../config/metadata.js';
+import { createMcpRuntime } from '../core/runtime.js';
+import { sharedLogger as logger } from '../shared/utils/logger.js';
+import { createAuthServices } from './auth.js';
+import { boundedMcpRequest } from './body.js';
+import {
+  corsPreflightResponse,
+  requestSecurityResponse,
+  withCors,
+} from './security.js';
 
-/**
- * Bridge RequestContext from registry to ToolContext format.
- * Converts snake_case provider fields to camelCase for tool handlers.
- */
-const createContextResolver = (): ContextResolver => (requestId) => {
-  const ctx = contextRegistry.get(requestId);
-  if (!ctx) return undefined;
+export interface HttpRuntimeOptions {
+  runtimeName: string;
+  verifier?: OAuthTokenVerifier;
+  eventBus?: ServerEventBus;
+}
 
-  return {
-    authStrategy: ctx.authStrategy,
-    providerToken: ctx.providerToken,
-    resolvedHeaders: ctx.resolvedHeaders,
-    provider: ctx.provider
-      ? {
-          accessToken: ctx.provider.access_token,
-          refreshToken: ctx.provider.refresh_token,
-          expiresAt: ctx.provider.expires_at,
-          scopes: ctx.provider.scopes,
-        }
-      : undefined,
-  };
-};
+export interface HttpRuntime {
+  fetch(request: Request): Promise<Response>;
+  close(): Promise<void>;
+  notify: ServerNotifier;
+}
 
-export function buildHttpApp(): Hono<{ Bindings: HttpBindings }> {
-  const app = new Hono<{ Bindings: HttpBindings }>();
+/** Build the fetch-native HTTP shell shared by Bun and Cloudflare Workers. */
+export function buildHttpApp(
+  config: AppConfig,
+  options: HttpRuntimeOptions,
+): HttpRuntime {
+  logger.setLevel(config.LOG_LEVEL);
 
-  // Parse unified config
-  const unifiedConfig = parseConfig(process.env as Record<string, unknown>);
+  const mcp = createMcpRuntime(config, {
+    runtimeName: options.runtimeName,
+    ...(options.eventBus ? { eventBus: options.eventBus } : {}),
+  });
+  const auth = createAuthServices(config, options.verifier);
+  const mcpPath = config.MCP_PUBLIC_URL.pathname;
+  const app = new Hono();
 
-  // Build MCP server with context resolver for auth data
-  const server = buildServer({
-    name: config.MCP_TITLE || serverMetadata.title,
-    version: config.MCP_VERSION,
-    instructions: config.MCP_INSTRUCTIONS || serverMetadata.instructions,
-    contextResolver: createContextResolver(),
+  app.use('*', async (context, next) => {
+    const request = context.req.raw;
+    const rejected = requestSecurityResponse(request, config);
+    if (rejected) return rejected;
+
+    if (auth) {
+      const metadata = oauthMetadataResponse(request, auth.metadata);
+      if (metadata) return metadata;
+    }
+
+    await next();
   });
 
-  const transports = new Map();
+  app.get('/health', (context) =>
+    context.json({
+      status: 'ok',
+      runtime: options.runtimeName,
+      protocol: '2026-07-28',
+      legacyMode: config.MCP_LEGACY_MODE,
+      authEnabled: config.AUTH_ENABLED,
+      timestamp: new Date().toISOString(),
+    }),
+  );
 
-  // Global middleware
-  app.use('*', corsMiddleware());
-  app.use('*', createAuthHeaderMiddleware());
+  app.get(
+    '/icon.svg',
+    () =>
+      new Response(SERVER_ICON_SVG, {
+        headers: {
+          'Content-Type': 'image/svg+xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=86400',
+          'Content-Security-Policy': "default-src 'none'; style-src 'none'; sandbox",
+        },
+      }),
+  );
 
-  // Routes
-  app.route('/', healthRoutes());
-  app.route('/', buildDiscoveryRoutes(unifiedConfig));
+  app.options(mcpPath, (context) => corsPreflightResponse(context.req.raw));
 
-  // MCP endpoint with security
-  app.use('/mcp', createMcpSecurityMiddleware(unifiedConfig));
-  app.route('/mcp', buildMcpRoutes({ server, transports }));
+  app.all(mcpPath, async (context) => {
+    const request = context.req.raw;
+    let authInfo: AuthInfo | undefined;
+    if (auth) {
+      const authResult = await auth.gate(request);
+      if (authResult instanceof Response) {
+        return withCors(request, authResult);
+      }
+      authInfo = authResult;
+    }
 
-  return app;
+    const bounded = await boundedMcpRequest(request, config.MCP_MAX_REQUEST_BYTES);
+    if (bounded.rejection) return withCors(request, bounded.rejection);
+
+    const response = await mcp.fetch(
+      bounded.request,
+      authInfo ? { authInfo } : undefined,
+    );
+    return withCors(request, response);
+  });
+
+  app.notFound((context) => context.text('Not Found', 404));
+
+  return {
+    fetch: async (request) => app.fetch(request),
+    close: mcp.close,
+    notify: mcp.notify,
+  };
 }

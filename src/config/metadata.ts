@@ -1,60 +1,31 @@
-/**
- * Centralized tool metadata for the MCP server.
- *
- * This file contains all tool definitions with rich, LLM-friendly descriptions.
- * Benefits:
- * - Single source of truth for tool metadata
- * - Easy to maintain and update descriptions
- * - Natural language optimized for LLM understanding
- * - Consistent structure across all tools
- */
+import type { Icon } from '@modelcontextprotocol/server';
+import type { AppConfig } from './env.js';
 
-export interface ToolMetadata {
-  name: string;
-  title: string;
-  description: string;
+export const SERVER_ICON_PATH = '/icon.svg';
+
+export function serverIcons(config: AppConfig): Icon[] {
+  return [
+    {
+      src: new URL(SERVER_ICON_PATH, config.MCP_PUBLIC_URL).href,
+      mimeType: 'image/svg+xml',
+      sizes: ['any'],
+      theme: 'light',
+    },
+  ];
 }
 
-export const toolsMetadata = {
-  example_api: {
-    name: 'example_api',
-    title: 'Example API Tool',
-    description: `Call an example external API endpoint and return the response.
-
-This tool demonstrates best practices for:
-- Making HTTP requests to external APIs
-- Handling responses and errors gracefully
-- Validating input parameters with Zod schemas
-- Formatting output for LLM consumption
-
-The tool can be customized for any REST API by modifying:
-1. The API endpoint URL
-2. Input schema validation rules
-3. Response parsing and formatting logic
-4. Error handling for specific API error codes`,
-  },
-} as const satisfies Record<string, ToolMetadata>;
-
-/**
- * Type-safe helper to get metadata for a tool.
- * Usage: getToolMetadata('example_api')
- */
-export function getToolMetadata(toolName: keyof typeof toolsMetadata): ToolMetadata {
-  return toolsMetadata[toolName];
+export function serverImplementation(config: AppConfig) {
+  return {
+    name: config.MCP_NAME,
+    title: config.MCP_TITLE,
+    version: config.MCP_VERSION,
+    description: config.MCP_DESCRIPTION,
+    icons: serverIcons(config),
+    ...(config.MCP_WEBSITE_URL ? { websiteUrl: config.MCP_WEBSITE_URL.href } : {}),
+  };
 }
 
-/**
- * Get all registered tool names.
- */
-export function getToolNames(): string[] {
-  return Object.keys(toolsMetadata);
-}
-
-/**
- * Server-level metadata
- */
-export const serverMetadata = {
-  title: 'MCP Server Template',
-  instructions:
-    'Use the available tools to inspect resources, run API calls, and keep responses concise.',
-} as const;
+export const SERVER_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MCP server">
+  <rect width="64" height="64" rx="12" fill="#111827"/>
+  <path d="M18 44V20h7l7 10 7-10h7v24h-7V31l-7 10-7-10v13z" fill="#fff"/>
+</svg>`;

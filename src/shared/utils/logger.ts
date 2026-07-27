@@ -1,6 +1,3 @@
-// Simple structured logger for shared modules (works in Node + Workers)
-// Does not depend on McpServer - suitable for OAuth flow and other shared code
-
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
 
 interface LogData {
@@ -15,43 +12,59 @@ const LOG_LEVELS: Record<LogLevel, number> = {
   error: 3,
 };
 
+const SENSITIVE_KEYS = [
+  'password',
+  'token',
+  'secret',
+  'key',
+  'authorization',
+  'access_token',
+  'refresh_token',
+];
+
 let currentLevel: LogLevel = 'info';
 
 function shouldLog(level: LogLevel): boolean {
   return LOG_LEVELS[level] >= LOG_LEVELS[currentLevel];
 }
 
-function formatLog(level: LogLevel, logger: string, data: LogData): string {
-  const timestamp = new Date().toISOString();
-  const { message, ...rest } = data;
-  const extra = Object.keys(rest).length > 0 ? ` ${JSON.stringify(rest)}` : '';
-  return `[${timestamp}] ${level.toUpperCase()} [${logger}] ${message}${extra}`;
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.toLowerCase();
+  return SENSITIVE_KEYS.some((sensitive) => normalized.includes(sensitive));
 }
 
-function sanitize(data: LogData): LogData {
-  const sanitized = { ...data };
-  const sensitiveKeys = [
-    'password',
-    'token',
-    'secret',
-    'key',
-    'authorization',
-    'access_token',
-    'refresh_token',
-  ];
+function sanitizeValue(value: unknown, key: string, seen: WeakSet<object>): unknown {
+  if (isSensitiveKey(key)) return '[REDACTED]';
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[CIRCULAR]';
+  seen.add(value);
 
-  for (const key of Object.keys(sanitized)) {
-    if (sensitiveKeys.some((sk) => key.toLowerCase().includes(sk))) {
-      const value = sanitized[key];
-      if (typeof value === 'string' && value.length > 8) {
-        sanitized[key] = `${value.substring(0, 8)}...`;
-      } else {
-        sanitized[key] = '[REDACTED]';
-      }
-    }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeValue(entry, key, seen));
   }
 
-  return sanitized;
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message };
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      sanitizeValue(entryValue, entryKey, seen),
+    ]),
+  );
+}
+
+function formatLog(level: LogLevel, logger: string, data: LogData): string {
+  const { message, ...fields } = data;
+  const sanitized = sanitizeValue(fields, '', new WeakSet());
+  return JSON.stringify({
+    timestamp: new Date().toISOString(),
+    level,
+    logger,
+    message,
+    ...(sanitized && typeof sanitized === 'object' ? sanitized : {}),
+  });
 }
 
 export const sharedLogger = {
@@ -60,29 +73,18 @@ export const sharedLogger = {
   },
 
   debug(logger: string, data: LogData): void {
-    if (shouldLog('debug')) {
-      console.log(formatLog('debug', logger, sanitize(data)));
-    }
+    if (shouldLog('debug')) console.debug(formatLog('debug', logger, data));
   },
 
   info(logger: string, data: LogData): void {
-    if (shouldLog('info')) {
-      console.log(formatLog('info', logger, sanitize(data)));
-    }
+    if (shouldLog('info')) console.info(formatLog('info', logger, data));
   },
 
   warning(logger: string, data: LogData): void {
-    if (shouldLog('warning')) {
-      console.warn(formatLog('warning', logger, sanitize(data)));
-    }
+    if (shouldLog('warning')) console.warn(formatLog('warning', logger, data));
   },
 
   error(logger: string, data: LogData): void {
-    if (shouldLog('error')) {
-      console.error(formatLog('error', logger, sanitize(data)));
-    }
+    if (shouldLog('error')) console.error(formatLog('error', logger, data));
   },
 };
-
-// Alias for backward compatibility
-export const logger = sharedLogger;

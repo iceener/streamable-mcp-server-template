@@ -1,59 +1,59 @@
-import { z } from 'zod';
-import { defineTool } from './types.js';
+import type { McpServer, ProtocolEra } from '@modelcontextprotocol/server';
+import * as z from 'zod/v4';
+import type { AppConfig } from '../../config/env.js';
+import { serverIcons } from '../../config/metadata.js';
 
-/**
- * Input schema for health tool.
- */
-export const healthInputSchema = z.object({
-  verbose: z.boolean().optional().describe('Include additional runtime details'),
+const HealthInput = z.object({
+  verbose: z.boolean().default(false).describe('Include non-sensitive request details'),
 });
 
-/**
- * Health check tool - works in both Node and Workers.
- */
-export const healthTool = defineTool({
-  name: 'health',
-  title: 'Health Check',
-  description: 'Check server health, uptime, and runtime information',
-  inputSchema: healthInputSchema,
-  outputSchema: {
-    status: z.string().describe('Server status'),
-    timestamp: z.number().describe('Current timestamp'),
-    runtime: z.string().describe('Runtime environment'),
-    uptime: z.number().optional().describe('Uptime in seconds (if available)'),
-  },
-  annotations: {
-    title: 'Server Health Check',
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: false,
-  },
-  handler: async (args) => {
-    const verbose = Boolean(args.verbose);
-
-    // Detect runtime
-    const g = globalThis as Record<string, unknown>;
-    const isWorkers = typeof g.caches !== 'undefined' && !('process' in g);
-    const runtime = isWorkers ? 'cloudflare-workers' : 'node';
-
-    const result: Record<string, unknown> = {
-      status: 'ok',
-      timestamp: Date.now(),
-      runtime,
-    };
-
-    if (verbose) {
-      if (!isWorkers && typeof process !== 'undefined') {
-        result.uptime = Math.floor(process.uptime());
-        result.nodeVersion = process.version;
-        result.memoryUsage = process.memoryUsage().heapUsed;
-      }
-    }
-
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      structuredContent: result,
-    };
-  },
+const HealthOutput = z.object({
+  status: z.literal('ok'),
+  timestamp: z.string(),
+  runtime: z.string(),
+  protocolEra: z.enum(['legacy', 'modern']),
+  authenticated: z.boolean(),
+  clientId: z.string().optional(),
+  requestMethod: z.string().optional(),
 });
+
+export function registerHealthTool(
+  server: McpServer,
+  config: AppConfig,
+  runtimeName: string,
+  era: ProtocolEra,
+): void {
+  server.registerTool(
+    'health',
+    {
+      title: 'Server Health',
+      description: 'Report server health and non-sensitive request context.',
+      inputSchema: HealthInput,
+      outputSchema: HealthOutput,
+      icons: serverIcons(config),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ verbose }, ctx) => {
+      const authInfo = ctx.http?.authInfo;
+      const output = {
+        status: 'ok' as const,
+        timestamp: new Date().toISOString(),
+        runtime: runtimeName,
+        protocolEra: era,
+        authenticated: authInfo !== undefined,
+        ...(authInfo ? { clientId: authInfo.clientId } : {}),
+        ...(verbose ? { requestMethod: ctx.mcpReq.method } : {}),
+      };
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],
+        structuredContent: output,
+      };
+    },
+  );
+}

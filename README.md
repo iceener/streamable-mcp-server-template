@@ -1,255 +1,238 @@
-# MCP Streamable HTTP Server Template
+# MCP 2026 Server Template
 
-## What is this?
+A fetch-native Model Context Protocol server template for **Bun** and **Cloudflare Workers**. Both runtimes use the same MCP server factory, tools, prompts, resources, security policy, and optional OAuth Resource Server boundary.
 
-A template for building MCP servers. Clone it, strip what you don't need, wire your API client, define tools. It's designed to be readable and easy to build on.
+> **Release status (2026-07-27):** this repository intentionally pins `@modelcontextprotocol/server` and `@modelcontextprotocol/client` to `2.0.0-beta.5`. That is the latest published SDK implementing the `2026-07-28` release candidate. The dated protocol and stable v2 SDK are expected on July 28 but are not final at this commit. Re-run the release gate below before claiming final conformance.
 
-Ships with dual-runtime support (Node.js and Cloudflare Workers from the same codebase), five auth strategies, encrypted token storage, and pretty much everything the latest MCP spec supports.
+## What the template implements
 
-## What is MCP?
+| Capability | Bun | Workers | Implementation |
+|---|---:|---:|---|
+| Modern `2026-07-28` HTTP | ✅ | ✅ | `createMcpHandler` with a fresh `McpServer` per request |
+| `server/discover` negotiation | ✅ | ✅ | SDK-managed |
+| Tools and structured output | ✅ | ✅ | Full Zod v4 Standard Schemas |
+| Prompts and completion | ✅ | ✅ | Prompt argument completion example |
+| Static and templated resources | ✅ | ✅ | Cache hints, icons, and URI validation |
+| Progress and cancellation | ✅ | ✅ | Request-scoped SSE and `AbortSignal` |
+| Change subscriptions | ✅ | ✅ | `subscriptions/listen` and handler notifier |
+| 2025-era interoperability | ✅ | ✅ | SDK stateless fallback; optional |
+| OAuth Resource Server | ✅ | ✅ | JWT/JWKS validation and RFC 9728 metadata |
+| Host and Origin validation | ✅ | ✅ | SDK security helpers before dispatch |
 
-Model Context Protocol is a JSON-RPC 2.0 wire protocol where servers expose typed capabilities (tools for actions, resources for data, prompts for templates) and clients (IDEs, agents, chat apps) invoke them based on LLM decisions.
+The template does **not** implement an OAuth Authorization Server. It relies on an external Authorization Server and validates access tokens intended for this MCP resource. It also intentionally omits deprecated sampling, roots, MCP logging, old direct elicitation, and the removed core Tasks runtime.
 
-Neither side implements the other's logic: servers know nothing about which LLM uses them, clients know nothing about how tools work internally. This decoupling solves the N×M integration problem. One server serves any compliant client, one client consumes any compliant server.
+## Protocol model
 
-## What's supported?
+Modern MCP HTTP is stateless:
 
-| Feature | Node.js | Workers | Notes |
-|---------|---------|---------|-------|
-| Tools (list, call) | ✅ | ✅ | Core capability, both runtimes |
-| Resources (list, read, templates) | ✅ | ✅ | Static and dynamic resources |
-| Prompts (list, get) | ✅ | ✅ | Template-based prompt generation |
-| Progress notifications | ✅ | ✅ | Long-running tool feedback |
-| Cancellation | ✅ | ✅ | AbortSignal-based |
-| Pagination | ✅ | ✅ | Cursor-based for large lists |
-| Logging | ✅ | ✅ | Server→client log messages |
-| Sampling (server→client LLM) | ✅ | ❌ | Requires persistent SSE stream |
-| Elicitation (user input) | ✅ | ❌ | Requires persistent SSE stream |
-| Roots (filesystem access) | ✅ | ❌ | Requires client capability check |
+1. A client negotiates with `server/discover`.
+2. Every JSON-RPC request carries its protocol version, client capabilities, and usually client identity in `_meta`.
+3. Every request is a separate HTTP `POST`; there is no `Mcp-Session-Id`, endpoint `GET` stream, session `DELETE`, or SSE replay.
+4. The SDK validates modern request envelopes and mirrored `MCP-Protocol-Version`, `Mcp-Method`, and conditional `Mcp-Name` headers.
+5. A terminal response is JSON. Progress or another related message upgrades that request to SSE. `subscriptions/listen` always uses SSE.
+6. Closing the request stream is cancellation.
 
-Protocol versions supported: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`.
+`src/core/runtime.ts` owns one deployment-scoped handler and event bus. Its factory creates a fresh server from `src/core/mcp.ts` for every HTTP request. Do not replace this with a shared `McpServer` or manually call `server.connect()` for modern HTTP.
 
-## Getting started
+The default `MCP_LEGACY_MODE=stateless` also accepts 2025-era initialization clients. This fallback does not create sessions and answers legacy `GET`/`DELETE` with `405`. Set `MCP_LEGACY_MODE=reject` for a modern-only endpoint.
 
-**First, generate an encryption key (you'll need this for both runtimes):**
-```bash
-openssl rand -base64 32 | tr -d '=' | tr '+/' '-_'
-```
+## Quick start
 
-### Node.js
+### Bun
 
 ```bash
 bun install
-cp .env.example .env          # Configure PROVIDER_*, AUTH_*, OAUTH_* vars
-                              # Set RS_TOKENS_ENC_KEY with generated key
-bun dev                       # MCP: localhost:3000/mcp, OAuth: localhost:3001
+cp .env.example .env
+bun run dev
+```
+
+Endpoints:
+
+- MCP: `http://localhost:3000/mcp`
+- Health: `http://localhost:3000/health`
+- Icon: `http://localhost:3000/icon.svg`
+
+Use an MCP v2 client with version negotiation enabled. The v2 client defaults to legacy mode unless configured otherwise:
+
+```ts
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
+
+const client = new Client(
+  { name: 'example-client', version: '1.0.0' },
+  { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+);
+
+await client.connect(
+  new StreamableHTTPClientTransport(
+    new URL('http://localhost:3000/mcp'),
+  ),
+);
 ```
 
 ### Cloudflare Workers
 
 ```bash
 bun install
-wrangler kv:namespace create TOKENS                    # Note the ID
-# Update wrangler.toml with KV namespace ID
-
-wrangler secret put PROVIDER_CLIENT_ID
-wrangler secret put PROVIDER_CLIENT_SECRET
-wrangler secret put RS_TOKENS_ENC_KEY                  # Paste generated key
-
-wrangler dev                  # Local: localhost:8787/mcp
-wrangler deploy               # Production: your-worker.workers.dev/mcp
+bun run types:worker
+bun run dev:worker
 ```
 
-## Server endpoints
+Before deploying, update these `wrangler.jsonc` values for the real hostname:
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/mcp` | POST, GET, DELETE | MCP protocol (JSON-RPC) |
-| `/health` | GET | Health check + readiness |
-| `/.well-known/oauth-authorization-server` | GET | OAuth AS metadata |
-| `/.well-known/oauth-protected-resource` | GET | Protected resource metadata |
-| `/authorize` | GET | Start OAuth flow |
-| `/oauth/callback` | GET | Provider redirect target |
-| `/token` | POST | Token exchange |
-| `/register` | POST | Dynamic client registration |
-| `/revoke` | POST | Token revocation |
+- `NODE_ENV` → `production`
+- `MCP_PUBLIC_URL` → the public `/mcp` URL
+- `MCP_ALLOWED_HOSTS`
+- `MCP_ALLOWED_ORIGIN_HOSTNAMES`
 
-Discovery endpoints also available under `/mcp/.well-known/*` prefix.
+Then validate and deploy:
 
-## Node.js vs Cloudflare Workers
+```bash
+bun run build:worker
+bun run deploy
+```
 
-The template produces two runtimes from the same codebase. Here's what you need to know:
+`src/worker.ts` keeps one handler per Worker isolate. That is safe because the handler contains deployment-scoped configuration and active exchanges—not a shared `McpServer` or principal. The default event bus is isolate-local; use a distributed `ServerEventBus` (for example, backed by a Durable Object/pub-sub design) if change notifications must reach subscriptions in every isolate.
 
-**Node.js (Hono + @hono/node-server)**
-- Entry: `src/index.ts`
-- Transport: SDK's `StreamableHTTPServerTransport`
-- Sessions: `MemorySessionStore` (default) or `SqliteSessionStore` for persistence
-- Full MCP features including bidirectional requests (sampling, elicitation, roots)
-- Local development: `bun dev`
+## Add a tool
 
-**Cloudflare Workers**
-- Entry: `src/worker.ts`
-- Transport: Custom JSON-RPC dispatcher (`shared/mcp/dispatcher.ts`)
-- Sessions: `KvSessionStore` with memory fallback (persists across requests)
-- Request→response only; no server-initiated messages
-- Deploy: `wrangler deploy`
+Use a complete Zod v4 object for input and output. The SDK converts the schemas, validates both sides, and requires `structuredContent` for successful results with an output schema.
 
-**Shared code** lives in `src/shared/` (tools, storage interfaces, OAuth flow, utilities). Runtime-specific adapters live in `src/adapters/http-hono/` and `src/adapters/http-workers/`.
+```ts
+import type { McpServer } from '@modelcontextprotocol/server';
+import * as z from 'zod/v4';
 
-**When to use which:**
-- Node.js: Local development, full MCP features, self-hosted servers
-- Workers: Production deployment, global edge, simple tool wrappers
+const SearchInput = z.object({
+  query: z.string().min(1),
+});
 
-## Authorization
+const SearchOutput = z.object({
+  matches: z.array(z.string()),
+});
 
-### Naming conventions (important!)
+export function registerSearchTool(server: McpServer): void {
+  server.registerTool(
+    'search',
+    {
+      title: 'Search',
+      description: 'Search the configured data source.',
+      inputSchema: SearchInput,
+      outputSchema: SearchOutput,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ query }, ctx) => {
+      // Forward cancellation to upstream fetch calls.
+      const response = await fetch(`https://api.example.com/search?q=${encodeURIComponent(query)}`, {
+        signal: ctx.mcpReq.signal,
+      });
+      const matches = z.array(z.string()).parse(await response.json());
+      return {
+        content: [{ type: 'text', text: `Found ${matches.length} matches.` }],
+        structuredContent: { matches },
+      };
+    },
+  );
+}
+```
 
-Use **generic `PROVIDER_*` names**, not service-specific names. This keeps the template portable and configuration consistent across all MCP servers.
+Register it from `src/shared/tools/registry.ts`. Tool context uses the public v2 interface:
 
-| ✅ Correct | ❌ Wrong |
-|-----------|----------|
-| `PROVIDER_CLIENT_ID` | `SPOTIFY_CLIENT_ID`, `LINEAR_CLIENT_ID` |
-| `PROVIDER_CLIENT_SECRET` | `SPOTIFY_CLIENT_SECRET`, `GMAIL_SECRET` |
-| `PROVIDER_ACCOUNTS_URL` | `SPOTIFY_ACCOUNTS_URL` |
-| `PROVIDER_API_URL` | `LINEAR_API_URL`, `GITHUB_API_URL` |
+- cancellation: `ctx.mcpReq.signal`
+- progress token: `ctx.mcpReq._meta?.progressToken`
+- related notifications: `ctx.mcpReq.notify(...)`
+- verified HTTP auth: `ctx.http?.authInfo`
+- original HTTP request: `ctx.http?.req`
 
-**Why?**
-- Same env var names work across all servers (Spotify, Linear, Gmail, etc.)
-- Deployment scripts don't need service-specific logic
-- `.env.example` and `wrangler.toml` remain generic templates
-- Easier to audit security (one pattern to check)
+Never derive authorization from `clientInfo`, server metadata, or tool annotations.
 
-**Example `.env`:**
+## OAuth Resource Server mode
+
+Set `AUTH_ENABLED=true` and configure the external Authorization Server:
+
 ```env
-# Generic provider config — same vars for any OAuth provider
-PROVIDER_CLIENT_ID=your-client-id
-PROVIDER_CLIENT_SECRET=your-client-secret
-PROVIDER_ACCOUNTS_URL=https://accounts.spotify.com   # or github.com, etc.
-PROVIDER_API_URL=https://api.spotify.com             # optional, for API calls
+MCP_PUBLIC_URL=https://mcp.example.com/mcp
+AUTH_ENABLED=true
+OAUTH_ISSUER_URL=https://auth.example.com
+OAUTH_AUTHORIZATION_URL=https://auth.example.com/authorize
+OAUTH_TOKEN_URL=https://auth.example.com/token
+OAUTH_JWKS_URL=https://auth.example.com/.well-known/jwks.json
+OAUTH_AUDIENCE=https://mcp.example.com/mcp
+OAUTH_REQUIRED_SCOPES=mcp:read,mcp:write
+OAUTH_RESPONSE_TYPES_SUPPORTED=code
+OAUTH_GRANT_TYPES_SUPPORTED=authorization_code
+OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED=S256
 ```
 
-**Exception:** If a server integrates multiple providers simultaneously (rare), prefix with provider name: `GITHUB_CLIENT_ID`, `GITLAB_CLIENT_ID`. Single-provider servers should always use `PROVIDER_*`.
+The RFC 8414 capability values above must match the external Authorization Server; the template does not invent unsupported grant or response types. The default verifier in `src/shared/auth/jwt-verifier.ts` verifies:
 
-### Auth strategies
+- JWT signature against remote JWKS
+- exact issuer
+- audience/resource
+- allowed algorithms
+- expiration
+- configured client-ID claim
+- required scopes (through the SDK bearer gate)
 
-Five auth strategies, configured via `AUTH_STRATEGY` env var:
+When enabled, the server publishes:
 
-| Strategy | Header | Use Case |
-|----------|--------|----------|
-| `oauth` | `Authorization: Bearer <RS_TOKEN>` | Full OAuth 2.1 PKCE flow with RS token → provider token mapping |
-| `bearer` | `Authorization: Bearer <TOKEN>` | Static token from `BEARER_TOKEN` env |
-| `api_key` | `X-Api-Key: <KEY>` (configurable) | Static key from `API_KEY` env |
-| `custom` | Multiple headers | Custom headers from `CUSTOM_HEADERS` env |
-| `none` | — | No authentication |
+- `/.well-known/oauth-protected-resource/mcp`
+- `/.well-known/oauth-authorization-server`
 
-**OAuth flow (strategy=oauth):**
-1. Client discovers AS metadata via `/.well-known/oauth-authorization-server`
-2. Client initiates PKCE flow → `/authorize` → provider login
-3. Provider callback → server issues RS tokens (access + refresh)
-4. Client sends RS token → server maps to provider token → tool executes with provider API
+Missing or invalid credentials produce a standard `401` challenge with `resource_metadata`; insufficient scopes produce `403`. Access tokens are not forwarded to upstream APIs. If an integration needs provider credentials, supply a custom `OAuthTokenVerifier` and place only the separately validated provider credential in `AuthInfo.extra`—never a refresh token. Custom opaque-token verifiers do not require `OAUTH_JWKS_URL`; the default JWT verifier does.
 
-**Token storage** (RS token → provider token mapping):
-- `FileTokenStore` — Node.js, file-based with optional encryption
-- `MemoryTokenStore` — Both runtimes, in-memory with TTL
-- `KvTokenStore` — Workers, Cloudflare KV with optional encryption
-- All support AES-256-GCM encryption via `RS_TOKENS_ENC_KEY`
+## Configuration
 
-## Sessions
+See `.env.example`. Important rules:
 
-Sessions enable multi-tenant operation. One server instance can serve multiple users with isolated state. Both runtimes use `SessionStore` for this.
+- `MCP_PUBLIC_URL` must be the canonical endpoint and HTTPS in production.
+- Host and Origin lists contain **hostnames**, not full URLs.
+- Requests without `Origin` are allowed for non-browser MCP clients; a present untrusted Origin is rejected with `403`.
+- Production browser CORS reflects only an Origin that passed validation.
+- `MCP_MAX_REQUEST_BYTES` bounds each JSON message before SDK parsing (1 MiB by default).
+- Do not configure protocol revision constants yourself; the SDK owns negotiation.
+- Rerun `bun run types:worker` after changing Worker bindings or vars.
 
-**What sessions give you:**
-- API key → session binding (who owns this connection)
-- Session limits per API key (default: 5, LRU eviction)
-- Session validation on every request (404 for invalid/expired sessions)
-- Protocol version tracking per session
-- Server→client request routing (sampling/elicitation need to know which client)
+## Validation
 
-**What sessions don't give you (that's on the agent):**
-- Conversation memory ("reply to that email")
-- Workflow state (draft continuation, last issue ID)
-- Context carryover between tool calls
-
-**Storage implementations:**
-
-| Store | Runtime | Backend | Persistence |
-|-------|---------|---------|-------------|
-| `MemorySessionStore` | Both | In-memory Map | Process lifetime |
-| `SqliteSessionStore` | Node.js | SQLite via Drizzle | Disk |
-| `KvSessionStore` | Workers | Cloudflare KV | Global |
-
-**Session lifecycle (per MCP spec):**
-1. Client sends `initialize` request without `Mcp-Session-Id` header
-2. Server creates session via `SessionStore.create(sessionId, apiKey)`, returns session ID in response header
-3. Client sends `initialized` notification with `Mcp-Session-Id` → server marks session as initialized
-4. All subsequent requests must include `Mcp-Session-Id` (400 Bad Request if missing)
-5. Server validates session exists on every request (404 Not Found if invalid/expired)
-6. Session expires after TTL (default: 24h) or client sends DELETE request
-
-**API key resolution** (for session binding):
-- `X-Api-Key` or `X-Auth-Token` header (direct API key auth)
-- Bearer token from `Authorization` header (OAuth RS token)
-- Static `API_KEY` from config (fallback)
-- `"public"` (unauthenticated)
-
-**Multi-tenant model:**
-```
-User A (api_key_1) ──┐
-                     │
-User B (api_key_2) ──┼──▶ Single MCP Server ──▶ Provider API
-                     │    (sessions isolate users)
-User C (api_key_3) ──┘
+```bash
+bun run typecheck
+bun run lint
+bun run format:check
+bun test
+bun run build
+bun run build:worker
+bun run types:worker:check
 ```
 
-## Adding tools
+`tests/protocol.test.ts` runs the official v2 client against the in-memory HTTP app in both modern and legacy modes. It covers discovery, tools, structured output, prompts, completion, resources, cache hints, progress, cancellation, subscriptions, header mismatch errors, Origin rejection, OAuth metadata, and concurrent principal isolation.
 
-**Location:** `src/shared/tools/`
+## Release gate
 
-**Pattern:** schema → metadata → handler → register
+When the final `2026-07-28` specification and stable v2 packages are published:
 
-```typescript
-// 1. Define input schema with Zod
-export const myToolInputSchema = z.object({
-  query: z.string().describe('Search query'),
-});
+1. Diff the final specification/schema against the release candidate.
+2. Upgrade the exact SDK pins together; do not mix package versions.
+3. Re-run the full validation list.
+4. Check whether `serverInfo` placement or required request metadata changed from beta.5.
+5. Only then replace the release-status warning and claim final conformance.
 
-// 2. Create tool with defineTool()
-export const myTool = defineTool({
-  name: 'my_tool',
-  title: 'My Tool',
-  description: 'What it does',
-  inputSchema: myToolInputSchema,
-  outputSchema: { result: z.string() },  // optional
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-  },
-  handler: async (args, context) => {
-    // 3. Implement handler
-    return {
-      content: [{ type: 'text', text: args.query }],
-      structuredContent: { result: args.query },  // required if outputSchema defined
-    };
-  },
-});
+## Project map
 
-// 4. Add to sharedTools array in registry.ts
-export const sharedTools: RegisteredTool[] = [
-  asRegisteredTool(healthTool),
-  asRegisteredTool(echoTool),
-  asRegisteredTool(myTool),  // ← add your tool here
-];
-```
-
-**Annotations** control how clients display/invoke: `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`.
-
-**Services:** For complex integrations, put business logic in `src/shared/services/`. Extract when: handler exceeds ~30 lines, multiple tools share logic, or external API needs rate limiting/retries. Simple tools can keep logic inline.
-
-## Known limitations
-
-**Node.js runtime** — Full MCP support including server→client requests (sampling, elicitation, roots) via SDK's `StreamableHTTPServerTransport`. Sessions persist via `MemorySessionStore` (default) or `SqliteSessionStore` for disk persistence.
-
-**Cloudflare Workers runtime** — Request→response mode only. Sessions persist via `KvSessionStore` across requests, but transport state is stateless (no SSE streams). Server→client requests (sampling, elicitation, roots) aren't available because they require an active SSE stream which Workers can't maintain. Use Workers for simple tool servers; for full MCP features, use Node.js or implement Durable Objects.
+- `src/core/runtime.ts` — modern handler, legacy posture, event bus, lifecycle
+- `src/core/mcp.ts` — fresh server factory and cache/capability policy
+- `src/http/app.ts` — shared Hono shell, bounded request bodies, and SDK routing
+- `src/http/security.ts` — Host, Origin, and CORS policy
+- `src/http/auth.ts` — optional OAuth Resource Server gate and metadata
+- `src/shared/tools/` — tools using v2 handler context
+- `src/shared/prompts/` — prompts and completion
+- `src/shared/resources/` — static/template resources and cache hints
+- `src/index.ts` / `src/worker.ts` — Bun and Workers entry points
 
 ## License
 
