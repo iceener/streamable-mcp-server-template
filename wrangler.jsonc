@@ -1,33 +1,44 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "mcp-template-worker",
+  "name": "mcp-server-template-dev",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-08",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
-  "vars": {
-    // Local-safe defaults. Replace the URL and allowlists before production deploy.
-    "NODE_ENV": "development",
-    "MCP_NAME": "mcp-server-template",
-    "MCP_TITLE": "MCP Server Template",
-    "MCP_VERSION": "1.0.0",
-    "MCP_PUBLIC_URL": "http://localhost:8787/mcp",
-    "MCP_ALLOWED_HOSTS": "localhost,127.0.0.1,[::1]",
-    "MCP_ALLOWED_ORIGIN_HOSTNAMES": "localhost,127.0.0.1,[::1]",
-    "MCP_LEGACY_MODE": "stateless",
-    "MCP_MAX_REQUEST_BYTES": "1048576",
-    "AUTH_ENABLED": "false",
-    "LOG_LEVEL": "info"
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8787
   },
   "observability": {
     "enabled": true,
-    "logs": {
-      "enabled": true,
-      "head_sampling_rate": 1
-    },
-    "traces": {
-      "enabled": true,
-      "head_sampling_rate": 0.1
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  },
+
+  // `wrangler dev` uses these. They only work on loopback, so a Worker deployed without
+  // `--env production` refuses every request instead of serving with development settings.
+  "vars": {
+    "NODE_ENV": "development",
+    "MCP_PUBLIC_URL": "http://127.0.0.1:8787/mcp",
+    "AUTH_MODE": "none"
+  },
+
+  "env": {
+    // `bun run deploy`. Replace every example.com value before the first deploy.
+    "production": {
+      "name": "mcp-server-template",
+      "workers_dev": true,
+      "vars": {
+        "NODE_ENV": "production",
+        "MCP_PUBLIC_URL": "https://mcp-server-template.example.workers.dev/mcp",
+        "MCP_ALLOWED_HOSTS": "mcp-server-template.example.workers.dev",
+        "MCP_ALLOWED_ORIGIN_HOSTNAMES": "mcp-server-template.example.workers.dev",
+        "AUTH_MODE": "oauth",
+        "OAUTH_ISSUER_URL": "https://auth.example.com",
+        "OAUTH_AUTHORIZATION_URL": "https://auth.example.com/oauth2/authorize",
+        "OAUTH_TOKEN_URL": "https://auth.example.com/oauth2/token",
+        "OAUTH_JWKS_URL": "https://auth.example.com/.well-known/jwks.json",
+        "LOG_LEVEL": "info"
+      }
     }
   }
 }

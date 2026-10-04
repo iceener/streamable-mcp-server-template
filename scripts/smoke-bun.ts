@@ -1,35 +1,77 @@
-import { parseConfig } from '../src/config/env.js';
-import { buildHttpApp, type HttpRuntime } from '../src/http/app.js';
-import { smokeClient } from './smoke-client.js';
+import assert from 'node:assert/strict';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { serve } from '../src/bun';
+import { createApp } from '../src/platform/app';
+import { parseConfig } from '../src/platform/config';
+import { createLogger } from '../src/platform/logger';
+import { createDeps } from '../src/server';
+import { smoke } from './smoke-client';
 
-let runtime: HttpRuntime | undefined;
-const server = Bun.serve({
-  hostname: '127.0.0.1',
-  port: 0,
-  fetch: (request) => runtime?.fetch(request) ?? new Response(null, { status: 503 }),
+/**
+ * Once a tool reports progress its response is an SSE stream, and Bun's default idle
+ * timeout (10 s, enforced within a few seconds) drops a stream that stays quiet longer.
+ * 15 s is past that window, so this check fails reliably without the fix in src/bun.ts.
+ */
+const QUIET_MS = 15_000;
+
+const config = parseConfig({
+  NODE_ENV: 'test',
+  PORT: '0',
+  MCP_PUBLIC_URL: 'http://127.0.0.1/mcp',
+  MCP_MAX_REQUEST_BYTES: '1024',
 });
-const endpoint = new URL(`http://127.0.0.1:${server.port}/mcp`);
-let timeout: ReturnType<typeof setTimeout> | undefined;
+const deps = createDeps(config, createLogger('warning'));
+// Finding the place reports progress, which opens the SSE stream; the forecast then goes quiet.
+deps.weather = {
+  findPlace: async () => ({
+    name: 'Slowtown',
+    region: undefined,
+    country: 'Nowhere',
+    latitude: 0,
+    longitude: 0,
+    timezone: 'UTC',
+  }),
+  getForecast: async (place, _days, signal) => {
+    await new Promise((resolve) => setTimeout(resolve, QUIET_MS));
+    signal.throwIfAborted();
+    return {
+      place,
+      current: {
+        time: '2026-10-05T12:00',
+        temperatureC: 20,
+        feelsLikeC: 20,
+        humidityPercent: 50,
+        windKmh: 5,
+        conditions: 'Clear sky',
+      },
+      daily: [],
+    };
+  },
+};
+
+const app = createApp(config, { deps });
+const server = serve(config, app);
+const endpoint = new URL('/mcp', server.url);
+
 try {
-  runtime = buildHttpApp(
-    parseConfig({
-      NODE_ENV: 'test',
-      MCP_PUBLIC_URL: endpoint.href,
-      MCP_ALLOWED_HOSTS: '127.0.0.1',
-      MCP_ALLOWED_ORIGIN_HOSTNAMES: '127.0.0.1',
-      MCP_MAX_REQUEST_BYTES: '1024',
-      AUTH_ENABLED: 'false',
-    }),
-    { runtimeName: 'bun' },
+  await smoke(endpoint, 'bun');
+
+  const client = new Client(
+    { name: 'smoke', version: '1.0.0' },
+    { versionNegotiation: { mode: 'auto' } },
   );
-  await Promise.race([
-    smokeClient(endpoint, 'bun'),
-    new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error('Bun smoke timed out')), 30_000);
-    }),
-  ]);
+  await client.connect(new StreamableHTTPClientTransport(endpoint));
+  const progress: number[] = [];
+  const result = await client.callTool(
+    { name: 'get-forecast', arguments: { city: 'Slowtown' } },
+    { onprogress: (update) => progress.push(update.progress), timeout: 20_000 },
+  );
+  await client.close();
+
+  assert.equal(result.isError, undefined, JSON.stringify(result));
+  assert.deepEqual(progress, [1, 2]);
+  console.info(`bun: an SSE stream quiet for ${QUIET_MS / 1000} s survived the idle timeout`);
 } finally {
-  clearTimeout(timeout);
-  await runtime?.close();
+  await app.close();
   await server.stop(true);
 }

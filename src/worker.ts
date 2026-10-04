@@ -1,20 +1,27 @@
-import { preloadSchemas } from '@modelcontextprotocol/server';
-import { parseConfig } from './config/env.js';
-import { buildHttpApp, type HttpRuntime } from './http/app.js';
+import { type App, createApp } from './platform/app';
+import { parseConfig } from './platform/config';
+import { createLogger } from './platform/logger';
 
-// Move schema construction into isolate startup instead of the first request.
-preloadSchemas();
-
-export function createWorkerRuntime(env: Env): HttpRuntime {
-  const config = parseConfig({ ...env });
-  return buildHttpApp(config, { runtimeName: 'cloudflare-workers' });
-}
-
-let runtime: HttpRuntime | undefined;
+/**
+ * Workers receive `env` with each request, so the app is built on the first request and
+ * reused for the isolate's lifetime. Bad configuration is logged once and answered with a
+ * generic 500; the details stay in Workers Logs, not in responses.
+ */
+let app: App | undefined;
+let misconfigured = false;
 
 export default {
-  fetch(request, env) {
-    runtime ??= createWorkerRuntime(env);
-    return runtime.fetch(request);
+  async fetch(request, env) {
+    if (!app && !misconfigured) {
+      try {
+        app = createApp(parseConfig({ ...env }));
+      } catch (error) {
+        misconfigured = true;
+        createLogger('error').error('Invalid configuration; fix it and redeploy', { error });
+      }
+    }
+    return app
+      ? app.fetch(request)
+      : Response.json({ error: 'server_misconfigured' }, { status: 500 });
   },
 } satisfies ExportedHandler<Env>;

@@ -1,9 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "lib": ["ES2022"],
     "types": ["./worker-configuration.d.ts"]
   },
-  "include": ["src/**/*.ts", "worker-configuration.d.ts"],
-  "exclude": ["node_modules", "dist", "src/index.ts"]
+  "include": ["src", "worker-configuration.d.ts"],
+  "exclude": ["src/bun.ts"]
 }
