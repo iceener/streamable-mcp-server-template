@@ -108,12 +108,20 @@ function textFromContent(content: unknown): string | undefined {
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Timed out waiting for event')), timeoutMs),
-    ),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Timed out waiting for event')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 describe('MCP 2026-07-28', () => {
@@ -188,6 +196,16 @@ describe('MCP 2026-07-28', () => {
       expect(exchange.requestHeaders.has('Mcp-Session-Id')).toBe(false);
       expect(exchange.responseHeaders.has('Mcp-Session-Id')).toBe(false);
     }
+  });
+
+  test('reports invalid tool input and resource/prompt lookup failures', async () => {
+    const { client } = await connect(createRuntime(), 'modern');
+    const invalid = await client.callTool({ name: 'echo', arguments: { message: '' } });
+    expect(invalid.isError).toBe(true);
+    await expect(
+      client.readResource({ uri: 'example://items/unknown/1' }),
+    ).rejects.toThrow();
+    await expect(client.getPrompt({ name: 'unknown' })).rejects.toThrow();
   });
 
   test('streams progress and cancels work through the request signal', async () => {
@@ -449,9 +467,10 @@ describe('HTTP security and OAuth Resource Server mode', () => {
     });
 
     try {
-      const issuer = 'http://issuer.example';
-      const audience = 'http://localhost:3000/mcp';
+      const issuer = 'https://issuer.example';
+      const audience = 'https://mcp.example.com/mcp';
       const config = testConfig({
+        MCP_PUBLIC_URL: audience,
         AUTH_ENABLED: 'true',
         OAUTH_ISSUER_URL: issuer,
         OAUTH_AUTHORIZATION_URL: `${issuer}/authorize`,
@@ -479,21 +498,116 @@ describe('HTTP security and OAuth Resource Server mode', () => {
         resource: new URL(audience),
       });
 
-      const wrongAudience = await new SignJWT({
+      const claims = {
         client_id: 'jwt-client',
         scope: 'mcp',
+        iss: issuer,
+        aud: audience,
+        exp: Math.floor(Date.now() / 1_000) + 300,
+      };
+      for (const overrides of [
+        ...[
+          'https://other.example/mcp',
+          'https://MCP.example.com/mcp',
+          'https://mcp.example.com:443/mcp',
+          'https://mcp.example.com/m%63p',
+          `${audience}/`,
+          `${audience}#fragment`,
+          `${audience}?x=1`,
+        ].map((aud) => ({ aud })),
+        { aud: ['https://other.example/mcp'] },
+        { iss: `${issuer}/` },
+        { exp: 1 },
+        { exp: undefined },
+        { client_id: undefined },
+        { client_id: '' },
+      ]) {
+        const invalid = await new SignJWT({ ...claims, ...overrides })
+          .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
+          .sign(privateKey);
+        await expect(verifier.verifyAccessToken(invalid)).rejects.toMatchObject({
+          code: 'invalid_token',
+        });
+      }
+      const multiAudience = await new SignJWT({
+        ...claims,
+        aud: ['https://other.example/mcp', audience],
       })
         .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
-        .setIssuer(issuer)
-        .setAudience('http://other.example/mcp')
-        .setIssuedAt()
-        .setExpirationTime('5m')
         .sign(privateKey);
-      await expect(verifier.verifyAccessToken(wrongAudience)).rejects.toMatchObject({
+      await expect(verifier.verifyAccessToken(multiAudience)).resolves.toMatchObject({
+        clientId: 'jwt-client',
+      });
+      const otherKey = await generateKeyPair('RS256');
+      const forged = await new SignJWT(claims)
+        .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
+        .sign(otherKey.privateKey);
+      await expect(verifier.verifyAccessToken(forged)).rejects.toMatchObject({
+        code: 'invalid_token',
+      });
+      const esKey = await generateKeyPair('ES256');
+      const wrongAlgorithm = await new SignJWT(claims)
+        .setProtectedHeader({ alg: 'ES256', kid: 'test-key' })
+        .sign(esKey.privateKey);
+      await expect(verifier.verifyAccessToken(wrongAlgorithm)).rejects.toMatchObject({
         code: 'invalid_token',
       });
     } finally {
       await jwksServer.stop(true);
+    }
+  });
+
+  test('public OAuth discovery allows browser origins without loosening application guards', async () => {
+    const runtime = createRuntime(
+      testConfig({
+        AUTH_ENABLED: 'true',
+        OAUTH_ISSUER_URL: 'http://localhost:4000',
+        OAUTH_AUTHORIZATION_URL: 'http://localhost:4000/authorize',
+        OAUTH_TOKEN_URL: 'http://localhost:4000/token',
+      }),
+      {
+        async verifyAccessToken() {
+          throw new Error('Discovery must not verify tokens');
+        },
+      },
+    );
+    for (const path of [
+      '/.well-known/oauth-protected-resource/mcp',
+      '/.well-known/oauth-authorization-server',
+    ]) {
+      for (const method of ['GET', 'HEAD', 'OPTIONS', 'POST']) {
+        const response = await runtime.fetch(
+          new Request(`http://localhost:3000${path}`, {
+            method,
+            headers: {
+              Host: 'localhost:3000',
+              Origin: 'https://browser-client.example',
+            },
+          }),
+        );
+        expect(response.status).toBe(
+          method === 'OPTIONS' ? 204 : method === 'POST' ? 405 : 200,
+        );
+        expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+        if (method === 'HEAD' || method === 'OPTIONS')
+          expect(await response.text()).toBe('');
+      }
+      const badHost = await runtime.fetch(
+        new Request(`http://localhost:3000${path}`, {
+          headers: { Host: 'evil.example', Origin: 'https://browser-client.example' },
+        }),
+      );
+      expect(badHost.status).toBe(403);
+      expect(badHost.headers.has('Access-Control-Allow-Origin')).toBe(false);
+    }
+    for (const path of ['/mcp', '/health', '/.well-known/not-oauth-metadata']) {
+      const response = await runtime.fetch(
+        new Request(`http://localhost:3000${path}`, {
+          headers: { Host: 'localhost:3000', Origin: 'https://browser-client.example' },
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.has('Access-Control-Allow-Origin')).toBe(false);
     }
   });
 

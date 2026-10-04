@@ -101,30 +101,50 @@ function enumValue<T extends string>(
   return value;
 }
 
+// Do not silently trim or normalize OAuth identifiers before comparing them.
+function urlInput(env: Record<string, unknown>, key: string, fallback = ''): string {
+  const value = env[key];
+  const raw =
+    value === undefined || value === null || value === '' ? fallback : String(value);
+  if (
+    /\s/u.test(raw) ||
+    [...raw].some(
+      (character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127,
+    )
+  ) {
+    throw new Error(`${key} must not contain whitespace or control characters`);
+  }
+  return raw;
+}
+
 function urlValue(
   env: Record<string, unknown>,
   key: string,
   fallback?: string,
 ): URL | undefined {
-  const value = stringValue(env, key, fallback);
+  const value = urlInput(env, key, fallback);
   if (!value) return undefined;
 
+  let url: URL;
   try {
-    return new URL(value);
+    url = new URL(value);
   } catch {
     throw new Error(`${key} must be an absolute URL`);
   }
-}
-
-function urlStringValue(env: Record<string, unknown>, key: string): string | undefined {
-  const value = stringValue(env, key);
-  if (!value) return undefined;
-  try {
-    new URL(value);
-  } catch {
-    throw new Error(`${key} must be an absolute URL`);
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`${key} must use HTTP or HTTPS`);
   }
-  return value;
+  const authority = value.split('/')[2];
+  if (!/^https?:\/\//i.test(value) || !authority || value.includes('\\')) {
+    throw new Error(`${key} must be an absolute HTTP(S) URL with an authority`);
+  }
+  if (url.username || url.password || authority.includes('@')) {
+    throw new Error(`${key} must not include userinfo`);
+  }
+  if (value.includes('#')) {
+    throw new Error(`${key} must not include a fragment`);
+  }
+  return url;
 }
 
 function requireValue<T>(value: T | undefined, key: string): T {
@@ -143,17 +163,17 @@ function validateSecureUrl(
   key: string,
   environment: RuntimeEnvironment,
 ): void {
-  if (
-    environment === 'production' &&
-    url.protocol !== 'https:' &&
-    !isLoopback(url.hostname)
-  ) {
+  if (url.protocol === 'https:') return;
+  if (environment === 'production') {
     throw new Error(`${key} must use HTTPS in production`);
+  }
+  if (!isLoopback(url.hostname)) {
+    throw new Error(`${key} may use HTTP only for loopback development or tests`);
   }
 }
 
 function validatePublicUrl(url: URL, environment: RuntimeEnvironment): void {
-  if (url.search || url.hash) {
+  if (url.href.includes('?') || url.href.includes('#')) {
     throw new Error('MCP_PUBLIC_URL must not include a query string or fragment');
   }
   validateSecureUrl(url, 'MCP_PUBLIC_URL', environment);
@@ -168,7 +188,7 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
     ['development', 'production', 'test'] as const,
     'development',
   );
-  const configuredPublicUrl = stringValue(env, 'MCP_PUBLIC_URL');
+  const configuredPublicUrl = urlInput(env, 'MCP_PUBLIC_URL');
   if (environment === 'production' && !configuredPublicUrl) {
     throw new Error('MCP_PUBLIC_URL is required in production');
   }
@@ -178,6 +198,11 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
     `http://localhost:${port}/mcp`,
   ) as URL;
   validatePublicUrl(publicUrl, environment);
+  // Stable SDK metadata and AuthInfo accept URL objects. Require a canonical
+  // spelling up front so serialization cannot change the resource identifier.
+  if (configuredPublicUrl && configuredPublicUrl !== publicUrl.href) {
+    throw new Error('MCP_PUBLIC_URL must use its canonical URL spelling');
+  }
 
   const defaultHosts = [publicUrl.hostname];
   if (environment !== 'production') {
@@ -185,40 +210,41 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
   }
 
   const authEnabled = booleanValue(env, 'AUTH_ENABLED');
-  const issuer = urlStringValue(env, 'OAUTH_ISSUER_URL');
+  const issuer = urlInput(env, 'OAUTH_ISSUER_URL') || undefined;
+  const issuerUrl = urlValue(env, 'OAUTH_ISSUER_URL');
   const authorizationUrl = urlValue(env, 'OAUTH_AUTHORIZATION_URL');
   const tokenUrl = urlValue(env, 'OAUTH_TOKEN_URL');
   const jwksUrl = urlValue(env, 'OAUTH_JWKS_URL');
-  const audience = stringValue(env, 'OAUTH_AUDIENCE', publicUrl.href);
+  const registrationUrl = urlValue(env, 'OAUTH_REGISTRATION_URL');
+  const websiteUrl = urlValue(env, 'MCP_WEBSITE_URL');
+  const audience = urlInput(
+    env,
+    'OAUTH_AUDIENCE',
+    configuredPublicUrl || publicUrl.href,
+  );
+
+  if (issuerUrl?.href.includes('?')) {
+    throw new Error('OAUTH_ISSUER_URL must not include a query string');
+  }
+  const configuredUrls: Array<[string, URL | undefined]> = [
+    ['OAUTH_ISSUER_URL', issuerUrl],
+    ['OAUTH_AUTHORIZATION_URL', authorizationUrl],
+    ['OAUTH_TOKEN_URL', tokenUrl],
+    ['OAUTH_JWKS_URL', jwksUrl],
+    ['OAUTH_REGISTRATION_URL', registrationUrl],
+    ['MCP_WEBSITE_URL', websiteUrl],
+  ];
+  for (const [key, url] of configuredUrls) {
+    if (url) validateSecureUrl(url, key, environment);
+  }
 
   if (authEnabled) {
-    try {
-      const audienceUrl = new URL(audience);
-      if (audienceUrl.hash) throw new Error('fragment');
-      if (audienceUrl.href !== publicUrl.href) {
-        throw new Error('resource mismatch');
-      }
-    } catch {
-      throw new Error(
-        'OAUTH_AUDIENCE must exactly match MCP_PUBLIC_URL and must not include a fragment',
-      );
+    if (audience !== (configuredPublicUrl || publicUrl.href)) {
+      throw new Error('OAUTH_AUDIENCE must exactly match MCP_PUBLIC_URL');
     }
     requireValue(issuer, 'OAUTH_ISSUER_URL');
     requireValue(authorizationUrl, 'OAUTH_AUTHORIZATION_URL');
     requireValue(tokenUrl, 'OAUTH_TOKEN_URL');
-    if (!audience) throw new Error('OAUTH_AUDIENCE is required when AUTH_ENABLED=true');
-
-    const oauthUrls: Array<[string, URL]> = [
-      ['OAUTH_ISSUER_URL', new URL(issuer as string)],
-      ['OAUTH_AUTHORIZATION_URL', authorizationUrl as URL],
-      ['OAUTH_TOKEN_URL', tokenUrl as URL],
-      ...(jwksUrl ? ([['OAUTH_JWKS_URL', jwksUrl]] as Array<[string, URL]>) : []),
-    ];
-    const registrationUrl = urlValue(env, 'OAUTH_REGISTRATION_URL');
-    if (registrationUrl) oauthUrls.push(['OAUTH_REGISTRATION_URL', registrationUrl]);
-    for (const [key, url] of oauthUrls) {
-      validateSecureUrl(url, key, environment);
-    }
   }
 
   const allowedHosts = listValue(env, 'MCP_ALLOWED_HOSTS', defaultHosts);
@@ -257,7 +283,7 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
       'Use the available tools and resources. Keep tool inputs concise.',
     ),
     MCP_PUBLIC_URL: publicUrl,
-    MCP_WEBSITE_URL: urlValue(env, 'MCP_WEBSITE_URL'),
+    MCP_WEBSITE_URL: websiteUrl,
     MCP_ALLOWED_HOSTS: allowedHosts,
     MCP_ALLOWED_ORIGIN_HOSTNAMES: allowedOriginHostnames,
     MCP_LEGACY_MODE: enumValue(
@@ -272,7 +298,7 @@ export function parseConfig(env: Record<string, unknown>): AppConfig {
     OAUTH_ISSUER_URL: issuer,
     OAUTH_AUTHORIZATION_URL: authorizationUrl,
     OAUTH_TOKEN_URL: tokenUrl,
-    OAUTH_REGISTRATION_URL: urlValue(env, 'OAUTH_REGISTRATION_URL'),
+    OAUTH_REGISTRATION_URL: registrationUrl,
     OAUTH_JWKS_URL: jwksUrl,
     OAUTH_AUDIENCE: audience || undefined,
     OAUTH_REQUIRED_SCOPES: listValue(env, 'OAUTH_REQUIRED_SCOPES'),

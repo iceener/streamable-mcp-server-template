@@ -14,7 +14,8 @@ import { createAuthServices } from './auth.js';
 import { boundedMcpRequest } from './body.js';
 import {
   corsPreflightResponse,
-  requestSecurityResponse,
+  hostSecurityResponse,
+  originSecurityResponse,
   withCors,
 } from './security.js';
 
@@ -47,14 +48,16 @@ export function buildHttpApp(
 
   app.use('*', async (context, next) => {
     const request = context.req.raw;
-    const rejected = requestSecurityResponse(request, config);
-    if (rejected) return rejected;
+    const rejectedHost = hostSecurityResponse(request, config);
+    if (rejectedHost) return rejectedHost;
 
     if (auth) {
       const metadata = oauthMetadataResponse(request, auth.metadata);
       if (metadata) return metadata;
     }
 
+    const rejectedOrigin = originSecurityResponse(request, config);
+    if (rejectedOrigin) return rejectedOrigin;
     await next();
   });
 

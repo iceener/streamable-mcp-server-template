@@ -37,15 +37,20 @@ function appendVary(headers: Headers, value: string): void {
   headers.set('Vary', [...values].join(', '));
 }
 
-/** Validate Host and any present Origin before MCP or auth processing. */
-export function requestSecurityResponse(
+/** Host validation applies to every route, including public OAuth metadata. */
+export function hostSecurityResponse(
   request: Request,
   config: AppConfig,
 ): Response | undefined {
-  return (
-    hostHeaderValidationResponse(request, config.MCP_ALLOWED_HOSTS) ??
-    originValidationResponse(request, config.MCP_ALLOWED_ORIGIN_HOSTNAMES)
-  );
+  return hostHeaderValidationResponse(request, config.MCP_ALLOWED_HOSTS);
+}
+
+/** Restrict application origins without blocking public OAuth discovery. */
+export function originSecurityResponse(
+  request: Request,
+  config: AppConfig,
+): Response | undefined {
+  return originValidationResponse(request, config.MCP_ALLOWED_ORIGIN_HOSTNAMES);
 }
 
 /** Build a strict browser preflight response for the MCP endpoint. */

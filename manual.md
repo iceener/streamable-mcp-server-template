@@ -1,6 +1,6 @@
 # MCP Template Implementation Guide
 
-Use this checklist to turn the template into a concrete MCP integration without weakening its protocol or security boundaries.
+Use this checklist to turn the template into a concrete MCP integration without weakening its protocol or security boundaries. Start with `bun install --frozen-lockfile`. The template targets published server/client SDK **2.0.0**, not unreleased `main`; keep both exact pins aligned. See [compatibility evidence and limitations](docs/MCP_SDK_COMPATIBILITY.md).
 
 ## 1. Keep the serving architecture
 
@@ -40,11 +40,14 @@ MCP_PUBLIC_URL=http://localhost:3000/mcp
 
 Before production:
 
-- use the canonical HTTPS endpoint;
+- use a canonical HTTPS endpoint with no query, fragment, or userinfo; `MCP_PUBLIC_URL` must already equal its URL serialization;
+- set `OAUTH_AUDIENCE` to that exact string (or omit it to use the same default); do not normalize token audiences, host case, explicit ports, or escapes before comparison;
 - set `MCP_ALLOWED_HOSTS` to the deployed hostnames;
-- set `MCP_ALLOWED_ORIGIN_HOSTNAMES` to browser origins you intentionally support;
+- set `MCP_ALLOWED_ORIGIN_HOSTNAMES` to the **hostnames** of browsers' origins you intentionally support (not full origins);
 - update the same values in `wrangler.jsonc` for Workers;
-- rerun `bun run types:worker`.
+- rerun `bun run types:worker`; do not hand-edit `worker-configuration.d.ts`.
+
+HTTP URLs are allowed only for loopback development/tests; production requires HTTPS even for loopback. These transport URL settings are not native OAuth redirect URI settings.
 
 `name` is a stable programmatic identifier. `title` is display text. Do not use either for authorization.
 
@@ -193,7 +196,21 @@ OAUTH_GRANT_TYPES_SUPPORTED=authorization_code
 OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED=S256
 ```
 
-The default verifier checks signature, issuer, audience, algorithms, expiration, client ID, and scopes. The advertised response, grant, and PKCE values must match the external Authorization Server's real metadata. This template does not own `/authorize`, `/token`, `/register`, callbacks, refresh tokens, or provider-token storage.
+The default verifier checks signature, exact issuer/audience strings, algorithms, expiration, client ID, and scopes. The advertised response, grant, and PKCE values must match the external Authorization Server's real metadata. Stable `AuthInfo.resource` is a `URL`, but JWT authorization compares the configured raw string through `jose`, not a normalized claim URL. Custom verifiers must independently validate the audience too; the bearer gate is not an audience verifier.
+
+This template does not own `/authorize`, `/token`, `/register`, callbacks, refresh tokens, or provider-token storage. Do not add provider-specific OAuth code just to customize a Resource Server.
+
+### Native callback ticket: N/A in this Resource Server
+
+Validate Alice OAuth at the **external AS**, not here:
+
+- Alice is a native public client with authorization code + PKCE **S256**, no embedded secret.
+- Bind its listener to literal `127.0.0.1`, port `0` (OS-assigned), and use `http://127.0.0.1:{actual-port}/oauth/callback`.
+- For per-attempt DCR, register that full callback, then use the returned client ID and identical URI at authorize and token. Validate `state`; bind the single-use code to the client, exact concrete callback, PKCE challenge, resource, and scopes.
+- No allow-all redirect matching, fixed port, `localhost` substitution, lookalike hosts, userinfo, fragments, or provider-web callback reuse. RFC 8252's native loopback port-only registration exception is not permission to change an issued code's callback during redemption.
+- Confirm this end to end in Alice and the external AS. The template's local tests have no native OAuth/DCR conformance claim.
+
+See the [external AS contract](README.md#external-authorization-server-contract-for-alice-native-oauth) for references.
 
 ## 6. Publish change events correctly
 
@@ -236,7 +253,8 @@ Extend `tests/protocol.test.ts` with the real tools and resources. At minimum, c
 - missing, invalid, expired, wrong-audience, and insufficient-scope tokens;
 - concurrent authenticated principals;
 - Host and Origin rejection;
-- Workers dry-run bundling.
+- Workers dry-run bundling and actual local workerd socket smoke;
+- raw stable `result._meta['io.modelcontextprotocol/serverInfo']`, omitted client identity, header mismatches, and streamed oversize rejection.
 
 Run:
 
@@ -248,13 +266,16 @@ bun test
 bun run build
 bun run build:worker
 bun run types:worker:check
+bun run test:smoke
 ```
+
+The real-runtime smokes use ephemeral ports, no remote bindings, and no provider credentials. Keep the pinned Wrangler/workerd tooling: 4.114.0 cannot run compatibility date `2026-09-08`. Wrangler 4.130.0 currently brings transitive Miniflare `5.20260908.0-alpha`; no application framework was added.
 
 ## 9. Production review
 
 Before release:
 
-- pin and review the final MCP SDK/spec revision;
+- review the published MCP SDK/spec revision and known gaps; stable 2.0.0 accepts a missing modern protocol header, and SDK body bounding remains unreleased (keep the app bound);
 - use HTTPS and exact production allowlists;
 - keep Authorization Server and JWKS URLs under trusted control;
 - set explicit JWT algorithms and required scopes;

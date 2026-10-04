@@ -31,8 +31,9 @@ export function createJwtVerifier(config: AppConfig): OAuthTokenVerifier {
   }
 
   const audience = config.OAUTH_AUDIENCE;
+  // AuthInfo.resource is URL in published SDK 2.0.0. Authorization uses the
+  // exact configured string below, never URL.href normalization of a JWT claim.
   const resource = new URL(audience);
-  resource.hash = '';
   const jwks = createRemoteJWKSet(config.OAUTH_JWKS_URL);
 
   return {

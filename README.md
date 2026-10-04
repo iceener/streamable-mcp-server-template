@@ -2,7 +2,7 @@
 
 A fetch-native Model Context Protocol server template for **Bun** and **Cloudflare Workers**. Both runtimes use the same MCP server factory, tools, prompts, resources, security policy, and optional OAuth Resource Server boundary.
 
-> **Release status (2026-07-27):** this repository intentionally pins `@modelcontextprotocol/server` and `@modelcontextprotocol/client` to `2.0.0-beta.5`. That is the latest published SDK implementing the `2026-07-28` release candidate. The dated protocol and stable v2 SDK are expected on July 28 but are not final at this commit. Re-run the release gate below before claiming final conformance.
+> **Compatibility status (2026-09-08):** runtime `@modelcontextprotocol/server` and test `@modelcontextprotocol/client` are pinned together to published **2.0.0**, including transitive core 2.0.0. The reference is the npm release, not unreleased SDK `main`. Local tests cover modern `2026-07-28` and stateless legacy `2025-11-25` on Bun and workerd. This is evidence of tested compatibility, **not full current-spec conformance**. See [the compatibility report](docs/MCP_SDK_COMPATIBILITY.md) for provenance, commands, and limitations.
 
 ## What the template implements
 
@@ -28,7 +28,7 @@ Modern MCP HTTP is stateless:
 1. A client negotiates with `server/discover`.
 2. Every JSON-RPC request carries its protocol version, client capabilities, and usually client identity in `_meta`.
 3. Every request is a separate HTTP `POST`; there is no `Mcp-Session-Id`, endpoint `GET` stream, session `DELETE`, or SSE replay.
-4. The SDK validates modern request envelopes and mirrored `MCP-Protocol-Version`, `Mcp-Method`, and conditional `Mcp-Name` headers.
+4. The SDK validates modern request envelopes and header/body mismatches, and requires `Mcp-Method` and conditional `Mcp-Name`. Send `MCP-Protocol-Version` on every modern request; published 2.0.0 still accepts its omission when the body has a valid modern envelope (rejection is an unreleased upstream change).
 5. A terminal response is JSON. Progress or another related message upgrades that request to SSE. `subscriptions/listen` always uses SSE.
 6. Closing the request stream is cancellation.
 
@@ -37,6 +37,8 @@ Modern MCP HTTP is stateless:
 The default `MCP_LEGACY_MODE=stateless` also accepts 2025-era initialization clients. This fallback does not create sessions and answers legacy `GET`/`DELETE` with `405`. Set `MCP_LEGACY_MODE=reject` for a modern-only endpoint.
 
 ## Quick start
+
+Use Bun (tested on 1.4.0) and Node **22+** for Wrangler and the workerd smoke (tested on Node 24.1.0).
 
 ### Bun
 
@@ -173,7 +175,7 @@ The RFC 8414 capability values above must match the external Authorization Serve
 
 - JWT signature against remote JWKS
 - exact issuer
-- audience/resource
+- exact audience/resource string (no URL normalization of JWT claims)
 - allowed algorithms
 - expiration
 - configured client-ID claim
@@ -186,13 +188,26 @@ When enabled, the server publishes:
 
 Missing or invalid credentials produce a standard `401` challenge with `resource_metadata`; insufficient scopes produce `403`. Access tokens are not forwarded to upstream APIs. If an integration needs provider credentials, supply a custom `OAuthTokenVerifier` and place only the separately validated provider credential in `AuthInfo.extra`—never a refresh token. Custom opaque-token verifiers do not require `OAUTH_JWKS_URL`; the default JWT verifier does.
 
+### External Authorization Server contract for Alice native OAuth
+
+Alice is a **public native client**, not a confidential web client. The external AS must support authorization code + **PKCE S256**, with no embedded client secret. Alice listens only on literal `127.0.0.1` and selects an OS-assigned ephemeral port for `http://127.0.0.1:{port}/oauth/callback`.
+
+If using DCR, register the complete callback selected for that attempt (`application_type=native`, `token_endpoint_auth_method=none` where supported). Bind the returned client ID and exact callback through **registration → authorize → token**. Bind the authorization code to that client, concrete redirect URI, PKCE challenge, requested resource, and granted scopes; redeem it once, with the same redirect URI and matching verifier. Preserve and verify client `state`.
+
+The AS must not use an allow-all redirect validator or pin Alice to a single port. RFC 8252 permits a port-only exception for registered native loopback redirects; it does not permit changing host, path, scheme, or the concrete callback bound to an issued code. For Alice's per-attempt DCR flow, send the same complete URI at all three stages. Do not substitute `localhost`, accept lookalike hosts/userinfo/fragments, or copy a provider web callback into the native flow. See [RFC 8252 §§7.3, 8.4](https://www.rfc-editor.org/rfc/rfc8252) and [RFC 6749 §4.1.3](https://www.rfc-editor.org/rfc/rfc6749#section-4.1.3).
+
+**Native callback ticket: N/A inside this template.** This is an RS only: no DCR, authorize/token endpoints, callback handler, provider OAuth proxy, or token storage. Test this contract in the external AS/Alice integration; local template smokes do not exercise an OAuth browser flow.
+
 ## Configuration
 
 See `.env.example`. Important rules:
 
-- `MCP_PUBLIC_URL` must be the canonical endpoint and HTTPS in production.
+- URL settings accept only HTTP(S), without userinfo, fragments, whitespace, or control characters. HTTPS is required in production, including loopback; development/tests allow HTTP only on `localhost`, `127.0.0.1`, or `[::1]`.
+- `MCP_PUBLIC_URL` must already use its canonical URL spelling and have no query. Noncanonical host casing/default ports/dot segments fail configuration instead of silently changing the resource identifier.
+- With auth enabled, `OAUTH_AUDIENCE` must match `MCP_PUBLIC_URL` byte-for-byte; omission defaults to that exact identifier. JWT audience values are compared as strings (including percent-escape spelling). Published SDK `AuthInfo.resource` remains a `URL`; it is not the source of audience comparison.
+- `OAUTH_ISSUER_URL` has no query; its exact configured string is used for JWT issuer checks.
 - Host and Origin lists contain **hostnames**, not full URLs.
-- Requests without `Origin` are allowed for non-browser MCP clients; a present untrusted Origin is rejected with `403`.
+- Requests without `Origin` are allowed for non-browser MCP clients; a present untrusted Origin is rejected with `403` on MCP/application routes. Public OAuth discovery documents keep the SDK's permissive CORS after Host validation.
 - Production browser CORS reflects only an Origin that passed validation.
 - `MCP_MAX_REQUEST_BYTES` bounds each JSON message before SDK parsing (1 MiB by default).
 - Do not configure protocol revision constants yourself; the SDK owns negotiation.
@@ -208,19 +223,23 @@ bun test
 bun run build
 bun run build:worker
 bun run types:worker:check
+bun run test:smoke
 ```
 
-`tests/protocol.test.ts` runs the official v2 client against the in-memory HTTP app in both modern and legacy modes. It covers discovery, tools, structured output, prompts, completion, resources, cache hints, progress, cancellation, subscriptions, header mismatch errors, Origin rejection, OAuth metadata, and concurrent principal isolation.
+`tests/protocol.test.ts` exercises the official client in-memory, JWT verification, and principal isolation. `tests/wire.test.ts` checks stable raw envelopes, metadata placement, omitted client identity, headers/errors, security, and streamed body limits. `tests/config.test.ts` checks URL and exact-resource validation.
+
+`test:smoke:bun` and `test:smoke:worker` use real HTTP sockets and the official client in both eras. The latter starts actual local workerd through pinned Wrangler 4.130.0, with compatibility date `2026-09-08`; its transitive Miniflare version is `5.20260908.0-alpha`. Both use ephemeral loopback ports and close clients/servers. No deployment, external AS, or provider credentials are needed. Workerd smoke starts Wrangler in Node and runs the client in a separate Bun process.
 
 ## Release gate
 
-When the final `2026-07-28` specification and stable v2 packages are published:
+For each future SDK update:
 
-1. Diff the final specification/schema against the release candidate.
-2. Upgrade the exact SDK pins together; do not mix package versions.
-3. Re-run the full validation list.
-4. Check whether `serverInfo` placement or required request metadata changed from beta.5.
-5. Only then replace the release-status warning and claim final conformance.
+1. Review the **published** package exports/schema and release changes, separately from `main`.
+2. Upgrade exact server/client pins together and inspect the lockfile delta.
+3. Run every validation command above, including both real-runtime smokes; regenerate Worker types if config/tooling changes.
+4. Check raw `result._meta['io.modelcontextprotocol/serverInfo']` placement, optional client identity, request headers, errors, and both protocol eras.
+5. Revisit known stable gaps: missing protocol-header rejection and SDK request-body bounding are unreleased; this app retains its own bound. The unreleased client resource-string fix is not a server API migration.
+6. Record evidence and limitations; do not infer full specification conformance or native OAuth integration coverage from these tests.
 
 ## Project map
 

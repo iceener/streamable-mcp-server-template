@@ -1,4 +1,4 @@
-export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
+import type { LogLevel } from '../../config/env.js';
 
 interface LogData {
   message: string;
