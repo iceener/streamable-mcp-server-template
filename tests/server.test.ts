@@ -55,3 +55,14 @@ describe('server', () => {
     expect(result).toMatchObject({ ttlMs: 60_000, cacheScope: 'public' });
   });
 });
+
+test('oversized tool arguments are refused before any schema runs', async () => {
+  const client = await connect();
+  const result = await client.callTool({
+    name: 'echo',
+    arguments: { text: 'x', padding: Array.from({ length: 2_000 }, () => 0) },
+  });
+
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toContain('1000');
+});

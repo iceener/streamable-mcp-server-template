@@ -21,31 +21,39 @@ Set `LOG_LEVEL=debug` and look for `Rejected access token`; `reason` and `detail
 - **`iss`** isn't exactly `OAUTH_ISSUER_URL`. Some providers add a trailing slash.
 - **The token isn't a JWT.** Use [another verifier](auth.md#verify-tokens-another-way).
 
-To read a token's claims, decode its middle segment: `echo '<token>' | cut -d. -f2 | base64 -d`.
+To read a token's claims without sending it anywhere:
+
+```sh
+bun -e 'console.log(JSON.parse(Buffer.from(process.argv[1].split(".")[1], "base64url").toString()))' '<token>'
+```
 
 ## 500 `server_error` with OAuth on
 
-The server couldn't fetch `OAUTH_JWKS_URL`. The log says `Could not load the authorization server key set`. Check the URL and that the server can reach it.
+The server couldn't fetch or read `OAUTH_JWKS_URL`: it was unreachable, answered with an error, or didn't return a key set. The log says `Could not load the authorization server key set`. Open the URL yourself and check that it returns JSON with a `keys` array.
 
 ## 400 with error code -32020
 
-The client sent `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` headers that don't match the request body, or left one out. Protocol 2026-07-28 requires them on every request; the official SDK clients send them. A client that doesn't is out of date or hand-written.
+The client sent `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` headers that don't match the request body, or left one out. Protocol 2026-07-28 requires the first two on every request, and `Mcp-Name` on requests that name something, such as `tools/call`, `prompts/get` and `resources/read`. The official SDK clients send them; a client that doesn't is out of date or hand-written.
 
 ## 413
 
 The request body is larger than `MCP_MAX_REQUEST_BYTES` (4 MiB by default).
 
-## A tool says "failed because of an internal error (reference …)"
+## A tool says "failed with an internal error (reference …)"
 
-The handler threw something unexpected. Search the logs for the reference: the `Unexpected tool failure` entry has the real error and its stack. To show the model a useful message for a failure you expect, return `toolError(...)`; see [tools.md](tools.md#errors).
+The handler threw something unexpected. Search the logs for the reference: the `Unexpected tool failure` entry has the real error and its stack. Resources and prompts answer `Internal error (reference …)` the same way. To show the model a useful message for a failure you expect, return `toolError(...)`; see [tools.md](tools.md#errors).
+
+## The server won't start: "already registered"
+
+Two tools, resources or prompts share a name. The server builds itself once at startup to catch this; rename one of them.
 
 ## `confirm-action` fails for some clients
 
-Clients that only speak the 2025-era protocol are served without a session, and the server can't ask them anything mid-call. They receive a tool error that says so. Clients that speak 2026-07-28 answer the question and call again.
+It needs a client that can show a form (elicitation). A 2026-07-28 client without that capability gets error `-32021` naming it. Clients that only speak the 2025-era protocol are served without a session, so the server can't ask them anything mid-call; they get a tool error that says so. In both cases nothing runs.
 
 ## Long tool calls disconnect
 
-On Bun, check that `src/bun.ts` still sets `idleTimeout`; Bun's 10 s default drops quiet streams. Behind a proxy, raise its read timeout and turn off response buffering for `/mcp`. Report progress from long tools: progress keeps the connection busy and tells the user something is happening.
+On Bun, check that `src/bun.ts` still sets `idleTimeout`; Bun's 10 s default drops quiet streams. Behind a proxy, raise its read timeout and turn off response buffering for `/mcp`. The SDK also sends a keepalive comment on open streams every 15 s, which `keepAliveMs` on `createMcpHandler` (in `src/platform/app.ts`) changes. Report progress from long tools: progress keeps the connection busy and tells the user something is happening.
 
 ## `wrangler dev` uses the wrong settings
 

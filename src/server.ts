@@ -1,12 +1,23 @@
-import { type CacheHint, McpServer, type McpServerFactory } from '@modelcontextprotocol/server';
-import type { Config } from './platform/config';
+/**
+ * The project's half of the template. `platform/` relies on exactly these exports:
+ * `serverInfo`, `SERVER_ICON_PATH`, `SERVER_ICON_SVG`, `Deps`, `createDeps`, `createServer`
+ * and `createVerifier`. Change what they contain, but keep their names and shapes.
+ */
+import {
+  type CacheHint,
+  McpServer,
+  type McpServerFactory,
+  type OAuthTokenVerifier,
+} from '@modelcontextprotocol/server';
+import type { Config, OAuthConfig } from './platform/config';
+import { createJwtVerifier } from './platform/jwt';
 import type { Logger } from './platform/logger';
 import { prompts } from './prompts';
 import { resources } from './resources';
 import { createWeatherService, type WeatherService } from './services/weather';
 import { tools } from './tools';
 
-/** Who this server is. Change these first when you start from the template. */
+/** Who this server is. Change every field when you start from the template. */
 export const serverInfo = {
   name: 'mcp-server-template',
   title: 'MCP Server Template',
@@ -33,7 +44,23 @@ export interface Deps {
 }
 
 export function createDeps(config: Config, logger: Logger): Deps {
-  return { config, logger, weather: createWeatherService() };
+  return {
+    config,
+    logger,
+    weather: createWeatherService({ apiKey: config.settings.OPEN_METEO_API_KEY }),
+  };
+}
+
+/**
+ * How bearer tokens are checked when `AUTH_MODE=oauth`: JWTs, against the authorization
+ * server's published keys. Return your own `OAuthTokenVerifier` to use introspection or
+ * another scheme; docs/auth.md shows one.
+ */
+export function createVerifier(oauth: OAuthConfig, deps: Deps): OAuthTokenVerifier {
+  return createJwtVerifier(
+    { issuer: oauth.issuer, jwksUrl: oauth.jwksUrl, audience: deps.config.publicUrl.href },
+    deps.logger,
+  );
 }
 
 /** Lists only change on deploy, and are the same for every caller. */

@@ -7,7 +7,6 @@ node_modules/
 !.env.example
 .dev.vars
 .dev.vars.*
-!.dev.vars.example
 
 # Build output and tool state
 dist/
@@ -22,3 +21,4 @@ dist/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+!.vscode/mcp.json

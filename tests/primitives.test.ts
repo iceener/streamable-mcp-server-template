@@ -5,6 +5,7 @@ import {
   McpServer,
   ProtocolErrorCode,
   ResourceNotFoundError,
+  ResourceTemplate,
 } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import {
@@ -125,5 +126,70 @@ describe('error policy', () => {
 
     expect(error).toMatchObject({ code: ProtocolErrorCode.InternalError });
     expect(error.message).not.toContain('SECRET');
+  });
+});
+
+describe('resource templates', () => {
+  test('list and complete callbacks that throw: a generic error with a reference', async () => {
+    const template = new ResourceTemplate('test://items/{id}', {
+      list: () => {
+        throw new Error(LEAKY);
+      },
+      complete: {
+        id: () => {
+          throw new Error(LEAKY);
+        },
+      },
+    });
+    const resource = defineResource('items', template, {}, (uri) => ({
+      contents: [{ uri: uri.href, text: 'item' }],
+    }));
+    const { client, deps } = await serve(resource);
+
+    const listed = await client.listResources().catch((caught) => caught);
+    const completed = await client
+      .complete({
+        ref: { type: 'ref/resource', uri: 'test://items/{id}' },
+        argument: { name: 'id', value: '' },
+      })
+      .catch((caught) => caught);
+
+    for (const error of [listed, completed]) {
+      expect(error).toMatchObject({ code: ProtocolErrorCode.InternalError });
+      expect(error.message).not.toContain('SECRET');
+    }
+    expect(deps.logs.map(({ message, fields }) => [message, fields.resource])).toEqual([
+      ['Unexpected resource failure', 'items'],
+      ['Unexpected resource failure', 'items'],
+    ]);
+  });
+
+  test('a template can be built from deps, so list and complete can use services', async () => {
+    const resource = defineResource(
+      'places',
+      (deps) =>
+        new ResourceTemplate('test://places/{name}', {
+          list: async () => ({
+            resources: [{ uri: `test://places/${deps.config.publicUrl.hostname}`, name: 'host' }],
+          }),
+        }),
+      {},
+      (uri) => ({ contents: [{ uri: uri.href, text: 'place' }] }),
+    );
+    const { client } = await serve(resource);
+
+    const { resources } = await client.listResources();
+    expect(resources.map((entry) => entry.uri)).toEqual(['test://places/127.0.0.1']);
+  });
+});
+
+describe('types', () => {
+  test('structuredContent must match outputSchema', () => {
+    defineTool(
+      'typed',
+      { description: 'Typed', outputSchema: z.object({ count: z.number() }) },
+      // @ts-expect-error "one" is not a number: `bun run typecheck` fails if this compiles.
+      () => ({ content: [], structuredContent: { count: 'one' } }),
+    );
   });
 });

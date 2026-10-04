@@ -3,12 +3,11 @@ import {
   type AuthMetadataOptions,
   buildOAuthProtectedResourceMetadata,
   getOAuthProtectedResourceMetadataUrl,
+  type OAuthTokenVerifier,
   oauthMetadataResponse,
   requireBearerAuth,
 } from '@modelcontextprotocol/server';
 import type { Config, OAuthConfig } from './config';
-import { createJwtVerifier } from './jwt';
-import type { Logger } from './logger';
 
 /** The OAuth resource-server boundary in front of the MCP endpoint. */
 export interface Auth {
@@ -26,8 +25,8 @@ export interface Auth {
 export function createAuth(
   config: Config,
   oauth: OAuthConfig,
+  verifier: OAuthTokenVerifier,
   resourceName: string,
-  logger: Logger,
 ): Auth {
   const metadata: AuthMetadataOptions = {
     // Mirrored at /.well-known/oauth-authorization-server for clients that look for the
@@ -48,18 +47,13 @@ export function createAuth(
   };
   buildOAuthProtectedResourceMetadata(metadata);
 
-  const verifier = createJwtVerifier(
-    { issuer: oauth.issuer, jwksUrl: oauth.jwksUrl, audience: config.publicUrl.href },
-    logger,
-  );
-
   return {
     metadata: (request) => oauthMetadataResponse(request, metadata),
     gate: requireBearerAuth({
       verifier,
       requiredScopes: oauth.scopes,
       resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(config.publicUrl),
-      // Accept only tokens issued for this server, whatever the verifier.
+      // Only tokens issued for this server: compares the `resource` the verifier reports.
       expectedResource: config.publicUrl,
     }),
   };

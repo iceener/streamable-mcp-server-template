@@ -16,8 +16,9 @@ const Approval = z.object({
  * returns the question, the client answers and calls again, and the handler runs with the
  * answer. Nothing is held on the server between the two calls.
  *
- * 2025-era clients served by the stateless fallback cannot be asked mid-call; the SDK
- * answers them with a tool error that says so, and nothing runs.
+ * A client that doesn't support form elicitation can't be asked, so nothing runs: a
+ * 2026-07-28 client gets error -32021 naming the missing capability, and a 2025-era client
+ * (served without a session) gets a tool error saying it can't receive the question.
  *
  * It also needs its own OAuth scope. Without `actions:write` the SDK answers
  * `403 insufficient_scope` before the handler runs, so the client can ask for more access.
@@ -29,7 +30,7 @@ export const confirmAction = defineTool(
   {
     title: 'Confirm an action',
     description:
-      'Ask the user to approve an action before it runs. Returns whether it was approved.',
+      'Ask the user to approve an action before it runs. Fails if the user does not approve.',
     inputSchema: z.object({
       action: z.string().min(1).max(200).describe('What will happen, in one sentence'),
     }),

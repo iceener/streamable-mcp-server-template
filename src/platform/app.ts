@@ -1,5 +1,5 @@
 import { createMcpHandler, type McpServerFactory } from '@modelcontextprotocol/server';
-import { createDeps, createServer, type Deps, serverInfo } from '../server';
+import { createDeps, createServer, createVerifier, type Deps, serverInfo } from '../server';
 import { createAuth } from './auth';
 import type { Config } from './config';
 import { createHttpApp } from './http';
@@ -23,18 +23,24 @@ export interface AppOptions {
 export function createApp(config: Config, options: AppOptions = {}): App {
   const deps = options.deps ?? createDeps(config, createLogger(config.logLevel));
   const { logger } = deps;
+  const factory = (options.server ?? createServer)(deps);
 
-  const mcp = createMcpHandler((options.server ?? createServer)(deps), {
+  // Build one server now, so a registration mistake (a duplicate name, an invalid schema)
+  // stops startup instead of failing every request.
+  factory({ era: 'modern' });
+
+  const mcp = createMcpHandler(factory, {
     legacy: config.legacy,
     maxRequestBodySize: config.maxRequestBytes,
-    // Mostly requests the SDK refused (bad headers, wrong media type); faults inside
-    // tools are logged at error level by the primitives' error policy.
+    // Requests the SDK refused (malformed headers or bodies, unsupported protocol versions)
+    // and responses it couldn't finish, usually because the client went away. Failures inside
+    // tools, resources and prompts are logged at error level by their error policy.
     onerror: (error) => logger.warning('MCP request failed', { error }),
   });
 
   const auth =
     config.auth.mode === 'oauth'
-      ? createAuth(config, config.auth, serverInfo.title, logger)
+      ? createAuth(config, config.auth, createVerifier(config.auth, deps), serverInfo.title)
       : undefined;
 
   if (!auth && config.environment === 'production') {

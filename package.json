@@ -1,6 +1,5 @@
 {
   "name": "mcp-server-template",
-  "version": "2.0.0",
   "private": true,
   "description": "Remote MCP server template for Bun and Cloudflare Workers, built on the official TypeScript SDK",
   "license": "MIT",
@@ -23,7 +22,7 @@
     "test:smoke": "bun scripts/smoke-bun.ts && node --disable-warning=ExperimentalWarning scripts/smoke-worker.ts",
     "types:worker": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler types --strict-vars=false",
     "types:worker:check": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler types --strict-vars=false --check",
-    "inspector": "npx -y @modelcontextprotocol/inspector",
+    "inspector": "npx -y @modelcontextprotocol/inspector@2.8.0",
     "token": "bun scripts/dev-token.ts"
   },
   "dependencies": {

@@ -2,7 +2,7 @@
 
 Before the first deploy, in either runtime:
 
-- [ ] Rename the server in `src/server.ts` (`serverInfo`, `instructions`) and the worker in `wrangler.jsonc`.
+- [ ] Rewrite every field of `serverInfo` in `src/server.ts` (name, title, version, description, websiteUrl), the `instructions`, and the worker names in `wrangler.jsonc`.
 - [ ] Set `MCP_PUBLIC_URL` to the exact HTTPS URL clients will use. It is also the OAuth audience, so changing it later breaks every issued token.
 - [ ] Set `MCP_ALLOWED_HOSTS` to that URL's hostname, and `MCP_ALLOWED_ORIGIN_HOSTNAMES` to it plus any browser-based clients.
 - [ ] Choose `AUTH_MODE`. Production won't start without it. `none` means anyone who can reach the URL can call every tool.
@@ -22,7 +22,7 @@ bun run deploy                       # wrangler deploy --env production
 
 On `workers.dev` the URL is `https://<name>.<your-subdomain>.workers.dev/mcp`. To use your own domain, add a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) route to `env.production` and use that hostname everywhere above.
 
-**Secrets.** Services that need API keys read them from `Config`. Add the variable to `src/platform/config.ts`, then store the value with `bunx wrangler secret put NAME --env production`. Never put secrets in `vars`. For local `wrangler dev`, put them in `.dev.vars`; it is gitignored.
+**Secrets.** Declare API keys in `src/settings.ts`, then store each value with `bunx wrangler secret put NAME --env production`. Never put secrets in `vars`. For local `wrangler dev`, put them in `.dev.vars`; it is gitignored.
 
 **Types.** After you change `wrangler.jsonc`, run `bun run types:worker`. `bun run check` fails while the generated `worker-configuration.d.ts` is out of date.
 

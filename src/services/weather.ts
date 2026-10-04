@@ -1,7 +1,8 @@
 import * as z from 'zod/v4';
 
 /**
- * Open-Meteo client (https://open-meteo.com). Free, no API key, global coverage.
+ * Open-Meteo client (https://open-meteo.com). Free without a key; with a commercial key
+ * (`OPEN_METEO_API_KEY` in `src/settings.ts`) it uses the customer endpoints instead.
  *
  * Services know nothing about MCP. They take an `AbortSignal` so a cancelled tool call
  * stops its upstream requests, validate every response, and throw `UpstreamError` when the
@@ -58,14 +59,22 @@ export class UpstreamError extends Error {
 }
 
 export interface WeatherServiceOptions {
+  /** A commercial API key. Without one, the free endpoints are used. */
+  apiKey?: string | undefined;
   /** Injected in tests. Defaults to the runtime's `fetch`. */
   fetch?: typeof fetch;
-  /** Per-request upper bound, on top of the caller's cancellation. */
+  /** Upper bound per request, including reading the response, on top of cancellation. */
   timeoutMs?: number;
 }
 
-const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
-const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+const FREE = {
+  geocoding: 'https://geocoding-api.open-meteo.com/v1/search',
+  forecast: 'https://api.open-meteo.com/v1/forecast',
+};
+const COMMERCIAL = {
+  geocoding: 'https://customer-geocoding-api.open-meteo.com/v1/search',
+  forecast: 'https://customer-api.open-meteo.com/v1/forecast',
+};
 
 const GeocodingResponse = z.object({
   results: z
@@ -104,31 +113,48 @@ const ForecastResponse = z.object({
 export function createWeatherService(options: WeatherServiceOptions = {}): WeatherService {
   const fetchImpl = options.fetch ?? fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
+  const endpoints = options.apiKey ? COMMERCIAL : FREE;
 
-  async function getJson<T>(url: URL, schema: z.ZodType<T>, signal: AbortSignal): Promise<T> {
-    let response: Response;
+  async function getJson<T>(
+    endpoint: string,
+    params: Record<string, string>,
+    schema: z.ZodType<T>,
+    signal: AbortSignal,
+  ): Promise<T> {
+    const url = new URL(endpoint);
+    url.search = new URLSearchParams({
+      ...params,
+      ...(options.apiKey && { apikey: options.apiKey }),
+    }).toString();
+
+    let body: unknown;
     try {
-      response = await fetchImpl(url, {
+      const response = await fetchImpl(url, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       });
+      if (!response.ok) throw new UpstreamError('Open-Meteo', response.status);
+      body = await response.json();
     } catch (error) {
-      if (signal.aborted) throw error; // The caller cancelled: not the provider's fault.
+      // Cancelled by the caller, or already classified: pass it on unchanged.
+      if (signal.aborted || error instanceof UpstreamError) throw error;
+      // A network failure, a timeout, or a body cut off or garbled in transit.
       throw new UpstreamError('Open-Meteo', undefined, { cause: error });
     }
-    if (!response.ok) throw new UpstreamError('Open-Meteo', response.status);
-    // A response that does not match the schema is a bug to fix, not an outage: let it throw.
-    return schema.parse(await response.json());
+    // A complete response in an unexpected shape is a bug to fix, not an outage: let it throw.
+    return schema.parse(body);
   }
 
   return {
     async findPlace(query, signal) {
       // "Paris, France": search by name, then prefer a match in the named country.
       const [name = '', countryHint] = query.split(',').map((part) => part.trim());
-      const url = new URL(GEOCODING_URL);
-      url.search = new URLSearchParams({ name, count: '10', language: 'en' }).toString();
-
-      const { results } = await getJson(url, GeocodingResponse, signal);
+      const { results } = await getJson(
+        endpoints.geocoding,
+        { name, count: '10', language: 'en' },
+        GeocodingResponse,
+        signal,
+      );
       const hint = countryHint?.toLowerCase();
       const match = hint
         ? results.find(
@@ -151,18 +177,20 @@ export function createWeatherService(options: WeatherServiceOptions = {}): Weath
     },
 
     async getForecast(place, days, signal) {
-      const url = new URL(FORECAST_URL);
-      url.search = new URLSearchParams({
-        latitude: String(place.latitude),
-        longitude: String(place.longitude),
-        timezone: place.timezone,
-        forecast_days: String(days),
-        current:
-          'temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code',
-        daily: 'temperature_2m_min,temperature_2m_max,precipitation_probability_max,weather_code',
-      }).toString();
-
-      const { current, daily } = await getJson(url, ForecastResponse, signal);
+      const { current, daily } = await getJson(
+        endpoints.forecast,
+        {
+          latitude: String(place.latitude),
+          longitude: String(place.longitude),
+          timezone: place.timezone,
+          forecast_days: String(days),
+          current:
+            'temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code',
+          daily: 'temperature_2m_min,temperature_2m_max,precipitation_probability_max,weather_code',
+        },
+        ForecastResponse,
+        signal,
+      );
       return {
         place,
         current: {

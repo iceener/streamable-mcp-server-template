@@ -1,5 +1,4 @@
 import {
-  type AuthInfo,
   hostHeaderValidationResponse,
   type McpHttpHandler,
   originValidationResponse,
@@ -32,6 +31,20 @@ export function createHttpApp({ config, mcp, auth, logger }: HttpOptions): Hono 
   const app = new Hono();
   const mcpPath = config.publicUrl.pathname;
 
+  // One line per request at debug level. Workers Logs records requests on its own.
+  app.use(async (c, next) => {
+    const started = performance.now();
+    await next();
+    logger.debug('HTTP request', {
+      method: c.req.method,
+      path: c.req.path,
+      status: c.res.status,
+      durationMs: Math.round(performance.now() - started),
+      mcpMethod: c.req.header('Mcp-Method'),
+      mcpName: c.req.header('Mcp-Name'),
+    });
+  });
+
   app.use(guard((request) => hostHeaderValidationResponse(request, config.allowedHosts)));
   if (auth) app.use(guard(auth.metadata));
   app.use(guard((request) => originValidationResponse(request, config.allowedOrigins)));
@@ -59,10 +72,9 @@ export function createHttpApp({ config, mcp, auth, logger }: HttpOptions): Hono 
     const caller = auth ? await auth.gate(request) : undefined;
     if (caller instanceof Response) return withCors(request, caller);
 
-    const response = await mcp.fetch(
-      request,
-      caller ? { authInfo: withoutToken(caller) } : undefined,
-    );
+    const response = caller
+      ? await mcp.fetch(withoutCredentials(request), { authInfo: { ...caller, token: '' } })
+      : await mcp.fetch(request);
     return withCors(request, response);
   });
 
@@ -82,10 +94,13 @@ function guard(check: (request: Request) => Response | undefined): MiddlewareHan
 }
 
 /**
- * Handlers get the verified caller without the raw bearer token. That token was issued
- * for this server; passing it to another API is forbidden by the MCP specification, and
- * leaving it out makes that impossible rather than merely discouraged.
+ * Once the token is verified, handlers get the caller (`ctx.http.authInfo`) but never the
+ * credential: the token is blanked there, and the `Authorization` header is removed from
+ * the request they can read as `ctx.http.req`. The token was issued for this server only,
+ * and the MCP specification forbids passing it to another API.
  */
-export function withoutToken(caller: AuthInfo): AuthInfo {
-  return { ...caller, token: '' };
+function withoutCredentials(request: Request): Request {
+  const headers = new Headers(request.headers);
+  headers.delete('Authorization');
+  return new Request(request, { headers });
 }

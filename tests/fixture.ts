@@ -9,14 +9,23 @@ import type { Deps } from '../src/server';
  */
 export const FIXTURE = { name: 'fixture', version: '1.0.0' };
 
-const probe = defineTool(
+export const probe = defineTool(
   'probe',
   { description: 'Returns its input.', inputSchema: z.object({ text: z.string() }) },
   ({ text }) => ({ content: [{ type: 'text', text }] }),
 );
 
+/** Reports everything a handler can see about the caller. */
 const caller = defineTool('caller', { description: 'Returns the caller.' }, (ctx) => ({
-  content: [{ type: 'text', text: JSON.stringify(ctx.http?.authInfo ?? null) }],
+  content: [
+    {
+      type: 'text',
+      text: JSON.stringify({
+        authInfo: ctx.http?.authInfo ?? null,
+        authorization: ctx.http?.req?.headers.get('Authorization') ?? null,
+      }),
+    },
+  ],
 }));
 
 const scoped = defineTool(

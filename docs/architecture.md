@@ -16,7 +16,7 @@ The template is the SDK's recommended remote-server setup, plus the few things a
    │ 4. /mcp                                                 │
    │      OPTIONS → CORS preflight                           │  platform/cors.ts
    │      bearer token valid?            no → 401 / 403      │  SDK requireBearerAuth
-   │      remove the raw token from the caller's AuthInfo    │
+   │      drop the token and the Authorization header        │
    └───────────────────────────┬─────────────────────────────┘
                                │ handler.fetch(request, { authInfo })
                      createMcpHandler (SDK)
@@ -35,21 +35,36 @@ The SDK owns everything between the HTTP request and your handler: reading and b
 |---|---|---|
 | Host and Origin checks on every route | `http.ts` | The SDK handler trusts its caller; the SDK docs say to put these in front of it. They stop DNS-rebinding and cross-site requests |
 | OAuth resource server | `auth.ts`, `jwt.ts` | `requireBearerAuth` with `expectedResource`, so only tokens issued for this server's URL are accepted |
-| Raw token removed before handlers | `http.ts` | The MCP spec forbids passing a client's token to other APIs. Handlers never see it, so they can't pass it on by mistake |
-| `defineTool` / `defineResource` / `definePrompt` | `primitives.ts` | One error policy for every handler. Unexpected errors are logged with a reference, and the client sees only the reference |
-| Validated configuration | `config.ts` | Wrong settings stop startup with a list of every problem, instead of failing on the first request |
-| Structured, redacting logger | `logger.ts` | JSON lines that Workers Logs indexes. Tokens and keys are removed from keys and values |
+| Credentials removed before handlers | `http.ts` | The MCP spec forbids passing a client's token to other APIs. Handlers see the verified caller, but neither the token nor the `Authorization` header, so they can't pass it on by mistake |
+| `defineTool` / `defineResource` / `definePrompt` | `primitives.ts` | One error policy for tool calls, resource reads, template `list` and `complete` callbacks, and prompt gets. Unexpected errors are logged with a reference, and the client sees only the reference. Tools also get `structuredContent` checked against `outputSchema` at compile time |
+| Validated configuration | `config.ts` | Wrong settings, including your own in `settings.ts`, are reported together before the first request is served |
+| A server built at startup | `app.ts` | A registration mistake, such as a duplicate tool name, stops startup instead of failing every request |
+| Structured, redacting logger | `logger.ts` | JSON lines that Workers Logs can filter. Secrets are removed by field name and by common value shapes: bearer and basic credentials, JWTs, and credentials in URLs |
 | Bun `idleTimeout` | `bun.ts` | Bun's 10 s default drops SSE streams that go quiet between progress updates |
+
+## Where your code meets the platform
+
+`platform/` imports from exactly two project files, and only these names:
+
+| File | Exports | Used for |
+|---|---|---|
+| `src/server.ts` | `serverInfo`, `SERVER_ICON_PATH`, `SERVER_ICON_SVG` | Identity: `/health`, `/icon.svg`, OAuth metadata |
+| | `Deps`, `createDeps` | What every handler receives, built once at startup |
+| | `createServer` | The per-request `McpServer` factory |
+| | `createVerifier` | How bearer tokens are checked in OAuth mode |
+| `src/settings.ts` | `Settings` | Your own settings, validated with the platform's |
+
+Keep those names and shapes, and you can replace `platform/` with a newer template's copy without merging anything.
 
 ## Decisions
 
-**A fresh `McpServer` per request.** `createMcpHandler` calls the factory in `src/server.ts` for every HTTP request, as the SDK requires since 2.3.0. Building a server is cheap (tool schemas are converted lazily), so the factory just registers definitions. Anything expensive, such as API clients or connection pools, belongs in `deps`, which is built once.
+**A fresh `McpServer` per request.** `createMcpHandler` calls the factory in `src/server.ts` for every HTTP request, as the SDK requires since 2.3.0. Building a server is cheap, because tool schemas are converted lazily, so the factory just registers definitions. Anything expensive, such as API clients or connection pools, belongs in `deps`, which is built once.
 
 **Stateless.** Protocol 2026-07-28 has no sessions; each request carries its own metadata. 2025-era clients are served through the SDK's stateless fallback (`MCP_LEGACY_MODE=stateless`), which means they can't receive server-to-client requests mid-call. `confirm-action` shows what they get instead. Set `MCP_LEGACY_MODE=reject` to serve 2026-07-28 clients only.
 
-**Dependencies are passed in, not imported.** `Deps` in `src/server.ts` holds config, the logger and service clients. Every handler receives it as its last argument. Tests swap in fakes (`tests/helpers.ts`); nothing reads globals.
+**Dependencies are passed in, not imported.** `Deps` holds config, the logger and service clients. Every handler receives it as its last argument. Tests swap in fakes (`tests/helpers.ts`); nothing reads globals.
 
-**Services know nothing about MCP.** `src/services/weather.ts` takes an `AbortSignal`, validates responses, and throws `UpstreamError`. The tool decides what the model is told. Services get their credentials from `Config`, never from the caller's token.
+**Services know nothing about MCP.** `src/services/weather.ts` takes an `AbortSignal`, validates responses, and throws `UpstreamError` for outages. The tool decides what the model is told. Services get their credentials from `config.settings`, never from the caller's token.
 
 **Hono, but not `@modelcontextprotocol/hono`.** Hono gives you somewhere to add routes such as webhooks and OAuth callbacks, and every route gets the same guards. The SDK's Hono package defaults to localhost-only Host checks and answers malformed JSON with plain text. It adds nothing here that the SDK's fetch helpers don't already provide.
 

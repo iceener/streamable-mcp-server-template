@@ -1,6 +1,6 @@
 # MCP Server Template
 
-A remote [Model Context Protocol](https://modelcontextprotocol.io) server for **Bun** and **Cloudflare Workers**, built on the official [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk). It speaks protocol `2026-07-28`, still serves 2025-era clients, and ships with production defaults: Host and Origin checks, OAuth resource-server auth, an error policy that keeps internals out of responses, and tests that run on both runtimes.
+A remote [Model Context Protocol](https://modelcontextprotocol.io) server for **Bun** and **Cloudflare Workers**, built on the official [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk). It speaks protocol `2026-07-28`, still serves 2025-era clients, and ships with production defaults: Host and Origin checks, OAuth resource-server auth that keeps tokens away from your code, an error policy that keeps internals out of responses, and tests that run on both runtimes.
 
 The sample server answers weather questions with [Open-Meteo](https://open-meteo.com), which needs no API key, so everything works on the first run. Replace the samples with your own tools; the rest of the template stays.
 
@@ -44,7 +44,8 @@ Each sample shows one pattern you'll need.
 
 ```
 src/
-  server.ts       Server identity, dependencies, and the per-request McpServer factory
+  server.ts       Server identity, dependencies, token verification, the McpServer factory
+  settings.ts     Settings your code needs: API keys, flags
   tools/          ┐
   resources/      │ Your code. One file per tool, resource or prompt;
   prompts/        │ each folder's index.ts lists them.
@@ -52,11 +53,11 @@ src/
   platform/       The template: config, HTTP pipeline, auth, logging, defineTool and friends
   bun.ts          Bun entry point
   worker.ts       Cloudflare Workers entry point
-tests/            In-process tests per tool, plus HTTP, auth, config and SDK contract suites
+tests/            In-process tests per tool and service, plus platform suites on a fixture server
 scripts/          Smoke tests on real sockets, and a local token issuer
 ```
 
-You edit `src/server.ts` and the four folders under it. `platform/` is the part you take from the template; changing it should rarely be necessary.
+You edit `server.ts`, `settings.ts` and the four folders. `platform/` is the part you take from the template: it relies only on what `server.ts` and `settings.ts` export, so you can update it from a newer template without merging your code.
 
 ## Add a tool
 
@@ -80,7 +81,7 @@ export const add = defineTool(
 );
 ```
 
-Add it to the list in `src/tools/index.ts`, and add `tests/tools/add.test.ts` (copy `echo.test.ts`). `defineTool` takes the same arguments as the SDK's `server.registerTool`, adds your dependencies as the handler's last argument, and logs unexpected errors instead of showing them to the model. [docs/tools.md](docs/tools.md) covers errors, progress, cancellation, asking the user, scopes and testing.
+Add it to the list in `src/tools/index.ts`, and add `tests/tools/add.test.ts` (copy `echo.test.ts`). `defineTool` takes the same arguments as the SDK's `server.registerTool`, adds your dependencies as the handler's last argument, checks `structuredContent` against `outputSchema` at compile time, and logs unexpected errors instead of showing them to the model. [docs/tools.md](docs/tools.md) covers errors, progress, cancellation, asking the user, scopes and testing.
 
 ## Choose a runtime
 
@@ -101,13 +102,13 @@ Server identity (name, version, instructions) lives in `src/server.ts`. Deployme
 |---|---|---|
 | `MCP_PUBLIC_URL` | `http://127.0.0.1:$PORT/mcp` | Public URL of the endpoint. Required in production |
 | `MCP_ALLOWED_HOSTS` | Public URL's host (+ loopback outside production) | Accepted `Host` headers |
-| `MCP_ALLOWED_ORIGIN_HOSTNAMES` | Same as hosts | Accepted browser `Origin` headers |
+| `MCP_ALLOWED_ORIGIN_HOSTNAMES` | Public URL's host (+ loopback outside production) | Accepted browser `Origin` headers |
 | `AUTH_MODE` | `none` | `none` or `oauth`. Required in production |
 | `OAUTH_*` | | Your authorization server; see [docs/auth.md](docs/auth.md) |
 | `MCP_LEGACY_MODE` | `stateless` | `reject` to serve 2026-07-28 clients only |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warning` or `error` |
 
-`.env.example` documents every variable. Invalid configuration stops the server at startup with a list of every problem.
+Your own settings, such as API keys, go in `src/settings.ts` and are validated with the rest. `.env.example` documents every variable. Invalid configuration is reported all at once: on Bun it stops startup; on Workers it is logged, and requests get a generic 500 until you fix it.
 
 ## Authentication
 

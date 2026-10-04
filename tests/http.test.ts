@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { withoutToken } from '../src/platform/http';
-import { serverInfo } from '../src/server';
-import { cleanup, message, PUBLIC_URL, post, testApp, testConfig } from './helpers';
+import { McpServer } from '@modelcontextprotocol/server';
+import { type Deps, serverInfo } from '../src/server';
+import { probe } from './fixture';
+import { cleanup, message, PUBLIC_URL, post, testApp, testConfig, testDeps } from './helpers';
 
 afterEach(cleanup);
 
@@ -61,10 +62,13 @@ describe('CORS preflight', () => {
     expect(response.headers.get('Access-Control-Allow-Headers')).toContain('mcp-method');
   });
 
-  test('refuses other methods and unknown headers', async () => {
+  test('refuses other methods, and allows any header the client asks for', async () => {
     const app = testApp();
     expect((await app.fetch(preflight('DELETE', 'content-type'))).status).toBe(405);
-    expect((await app.fetch(preflight('POST', 'x-custom'))).status).toBe(400);
+
+    const custom = await app.fetch(preflight('POST', 'content-type, x-request-id'));
+    expect(custom.status).toBe(204);
+    expect(custom.headers.get('Access-Control-Allow-Headers')).toBe('content-type, x-request-id');
   });
 });
 
@@ -136,9 +140,31 @@ describe('routes', () => {
   });
 });
 
-describe('caller identity', () => {
-  test('handlers receive the verified caller without the bearer token', () => {
-    const caller = { token: 'raw-token', clientId: 'client', scopes: ['mcp'], expiresAt: 1 };
-    expect(withoutToken(caller)).toEqual({ ...caller, token: '' });
+describe('startup', () => {
+  test('a registration mistake stops startup instead of failing every request', () => {
+    const duplicate = (deps: Deps) => () => {
+      const server = new McpServer({ name: 'broken', version: '1.0.0' });
+      probe.register(server, deps);
+      probe.register(server, deps);
+      return server;
+    };
+    expect(() => testApp(testConfig(), { server: duplicate })).toThrow('already registered');
+  });
+
+  test('production without authentication says so in the log', () => {
+    const config = testConfig({
+      NODE_ENV: 'production',
+      MCP_PUBLIC_URL: 'https://mcp.example.com/mcp',
+      AUTH_MODE: 'none',
+    });
+    const deps = testDeps({ config });
+    testApp(config, { deps });
+
+    expect(deps.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'warning',
+        message: expect.stringContaining('Authentication is off'),
+      }),
+    );
   });
 });

@@ -46,36 +46,52 @@ export function createLogger(level: LogLevel, context: LogFields = {}): Logger {
 }
 
 const SECRET_WORDS = new Set([
-  'apikey',
   'authorization',
   'cookie',
   'credential',
   'credentials',
+  'passwd',
   'password',
+  'pwd',
   'secret',
   'token',
 ]);
 
-/** `accessToken`, `api_key`, `Set-Cookie` and `clientSecret` are secret keys; `tokenizer` is not. */
+/** Words that make a following `key` a secret: `apiKey`, `x-api-key`, `privateKey`. */
+const KEY_QUALIFIERS = new Set(['access', 'api', 'encryption', 'private', 'secret', 'signing']);
+
+/**
+ * Field names that hold secrets: `accessToken`, `client_secret`, `x-api-key`, `Set-Cookie`,
+ * `privateKey`. A plain `key` (a cache key, a map key) is not one; neither is `tokenizer`.
+ */
 function isSecretKey(key: string): boolean {
   const words = key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
-    .replace(/api[-_ ]?key/g, 'apikey')
     .split(/[^a-z0-9]+/);
-  return words.some((word) => SECRET_WORDS.has(word));
+  return words.some(
+    (word, index) =>
+      SECRET_WORDS.has(word) ||
+      (word === 'key' && KEY_QUALIFIERS.has(words[index - 1] ?? '')) ||
+      word === 'apikey',
+  );
 }
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/\bBearer\s+[\w.~+/=-]+/gi, 'Bearer [REDACTED]'],
+  [/\b(Bearer|Basic)\s+[\w.~+/=-]+/gi, '$1 [REDACTED]'],
   [/\beyJ[\w-]*\.[\w-]+\.[\w-]*/g, '[REDACTED_JWT]'],
+  [/(\/\/)[^/@\s:]+:[^/@\s]+@/g, '$1[REDACTED]@'],
   [
-    /([?&](?:access_token|api_key|apikey|client_secret|code|key|password|token)=)[^&#\s]+/gi,
-    '$1[REDACTED]',
+    /(^|[?&\s])((?:access_token|api_key|apikey|client_secret|code|key|password|token)=)[^&#\s]+/gi,
+    '$1$2[REDACTED]',
   ],
 ];
 
-/** Secrets also hide in values: error messages, URLs and headers copied into a string. */
+/**
+ * Secrets also hide in values: error messages, URLs and headers copied into a string. These
+ * patterns catch the common shapes (bearer and basic credentials, JWTs, credentials in URLs
+ * and query strings), not every secret a string could contain.
+ */
 function redactText(text: string): string {
   return SECRET_PATTERNS.reduce(
     (redacted, [pattern, replacement]) => redacted.replace(pattern, replacement),

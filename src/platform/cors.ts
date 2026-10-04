@@ -3,23 +3,7 @@
  * `originValidationResponse`, so these helpers only ever answer an allowed origin.
  */
 
-const ALLOWED_REQUEST_HEADERS = new Set([
-  'accept',
-  'authorization',
-  'baggage',
-  'content-type',
-  'mcp-method',
-  'mcp-name',
-  'mcp-protocol-version',
-  'traceparent',
-  'tracestate',
-]);
-
-/** SEP-2243 lets tools mirror arguments into `Mcp-Param-*` headers via `x-mcp-header`. */
-const isAllowedRequestHeader = (header: string) =>
-  ALLOWED_REQUEST_HEADERS.has(header) || header.startsWith('mcp-param-');
-
-/** Answer a preflight for the MCP endpoint: POST only, known headers only. */
+/** Answer a preflight for the MCP endpoint: POST, with whatever headers the client sends. */
 export function corsPreflight(request: Request): Response {
   const origin = request.headers.get('Origin');
   if (!origin) return new Response(null, { status: 204 });
@@ -29,19 +13,13 @@ export function corsPreflight(request: Request): Response {
     return new Response('CORS method not allowed', { status: 405 });
   }
 
-  const requested = (request.headers.get('Access-Control-Request-Headers') ?? '')
-    .split(',')
-    .map((header) => header.trim().toLowerCase())
-    .filter(Boolean);
-  const rejected = requested.find((header) => !isAllowedRequestHeader(header));
-  if (rejected) return new Response(`CORS header not allowed: ${rejected}`, { status: 400 });
-
   const headers = new Headers({
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': requested.join(', '),
     'Access-Control-Max-Age': '600',
   });
+  const requested = request.headers.get('Access-Control-Request-Headers');
+  if (requested) headers.set('Access-Control-Allow-Headers', requested);
   addVary(headers, 'Origin', 'Access-Control-Request-Method', 'Access-Control-Request-Headers');
   return new Response(null, { status: 204, headers });
 }

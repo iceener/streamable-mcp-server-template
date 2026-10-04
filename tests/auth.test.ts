@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { exportJWK, generateKeyPair, type JWTPayload, SignJWT } from 'jose';
+import { base64url, exportJWK, generateKeyPair, type JWTPayload, SignJWT } from 'jose';
 import type { App } from '../src/platform/app';
 import { serverInfo } from '../src/server';
 import {
@@ -17,18 +17,36 @@ import {
   track,
 } from './helpers';
 
-/** A stand-in authorization server: a signing key, and its JWKS on a local port. */
+/**
+ * A stand-in authorization server on a local port. Its key set also publishes a shared
+ * secret, as a misconfigured server might; a token signed with it must still be refused.
+ * `/down` and `/html` are key set URLs that fail.
+ */
+const SHARED_SECRET = new TextEncoder().encode('a-shared-secret-of-sufficient-length!!');
 let issuer: string;
-let sign: (claims: JWTPayload, alg?: 'RS256' | 'HS256') => Promise<string>;
-let jwks: ReturnType<typeof Bun.serve>;
+let sign: (claims: JWTPayload, key?: 'rsa' | 'shared') => Promise<string>;
+let authorizationServer: ReturnType<typeof Bun.serve>;
 
 beforeAll(async () => {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
-  const jwk = { ...(await exportJWK(publicKey)), kid: 'test-key', alg: 'RS256', use: 'sig' };
-  jwks = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => Response.json({ keys: [jwk] }) });
-  issuer = `http://127.0.0.1:${jwks.port}`;
+  const keys = [
+    { ...(await exportJWK(publicKey)), kid: 'rsa', alg: 'RS256', use: 'sig' },
+    { kty: 'oct', k: base64url.encode(SHARED_SECRET), kid: 'shared', alg: 'HS256', use: 'sig' },
+  ];
+  authorizationServer = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(request) {
+      const { pathname } = new URL(request.url);
+      if (pathname === '/down') return new Response('Unavailable', { status: 503 });
+      if (pathname === '/html')
+        return new Response('<html></html>', { headers: { 'Content-Type': 'text/html' } });
+      return Response.json({ keys });
+    },
+  });
+  issuer = `http://127.0.0.1:${authorizationServer.port}`;
 
-  sign = async (claims, alg = 'RS256') => {
+  sign = async (claims, key = 'rsa') => {
     const now = Math.floor(Date.now() / 1000);
     const jwt = new SignJWT({
       iss: issuer,
@@ -39,14 +57,14 @@ beforeAll(async () => {
       iat: now,
       exp: now + 300,
       ...claims,
-    }).setProtectedHeader({ alg, kid: 'test-key' });
-    return alg === 'HS256'
-      ? jwt.sign(new TextEncoder().encode('a-shared-secret-of-sufficient-length!!'))
-      : jwt.sign(privateKey);
+    }).setProtectedHeader(
+      key === 'rsa' ? { alg: 'RS256', kid: 'rsa' } : { alg: 'HS256', kid: 'shared' },
+    );
+    return jwt.sign(key === 'rsa' ? privateKey : SHARED_SECRET);
   };
 });
 
-afterAll(() => jwks.stop(true));
+afterAll(() => authorizationServer.stop(true));
 afterEach(cleanup);
 
 function oauthApp(env: Record<string, string> = {}, logs: LogEntry[] = []): App {
@@ -64,11 +82,12 @@ function oauthApp(env: Record<string, string> = {}, logs: LogEntry[] = []): App 
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-async function connectWith(app: App, token: string): Promise<Client> {
-  const client = new Client(
-    { name: 'test', version: '1.0.0' },
-    { versionNegotiation: { mode: 'auto' } },
-  );
+async function connectWith(
+  app: App,
+  token: string,
+  mode: 'auto' | 'legacy' = 'auto',
+): Promise<Client> {
+  const client = new Client({ name: 'test', version: '1.0.0' }, { versionNegotiation: { mode } });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(PUBLIC_URL), {
       fetch: (url, init) => {
@@ -115,6 +134,15 @@ describe('discovery', () => {
     });
   });
 
+  test('discovery documents are behind the Host check like every route', async () => {
+    const response = await oauthApp().fetch(
+      new Request('http://127.0.0.1:3000/.well-known/oauth-protected-resource/mcp', {
+        headers: { Host: 'evil.example' },
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
   test('a request without a token is challenged toward the metadata', async () => {
     const response = await post(oauthApp(), message('tools/list'));
 
@@ -128,20 +156,25 @@ describe('discovery', () => {
 });
 
 describe('tokens', () => {
-  test('a valid token reaches the handlers, which see the caller but not the token', async () => {
-    const token = await sign({});
-    const client = await connectWith(oauthApp(), token);
-    const result = await client.callTool({ name: 'caller', arguments: {} });
+  for (const era of ['auto', 'legacy'] as const) {
+    test(`${era}: handlers see the verified caller, but neither the token nor the header`, async () => {
+      const token = await sign({});
+      const client = await connectWith(oauthApp(), token, era);
+      const result = await client.callTool({ name: 'caller', arguments: {} });
 
-    expect(JSON.parse(textOf(result))).toMatchObject({
-      token: '',
-      clientId: 'client-1',
-      scopes: ['mcp'],
-      resource: PUBLIC_URL,
-      extra: { subject: 'user-1' },
+      expect(JSON.parse(textOf(result))).toEqual({
+        authInfo: expect.objectContaining({
+          token: '',
+          clientId: 'client-1',
+          scopes: ['mcp'],
+          resource: PUBLIC_URL,
+          extra: { subject: 'user-1' },
+        }),
+        authorization: null,
+      });
+      expect(JSON.stringify(result)).not.toContain(token);
     });
-    expect(JSON.stringify(result)).not.toContain(token);
-  });
+  }
 
   test('azp is accepted when client_id is absent', async () => {
     const response = await post(
@@ -157,7 +190,7 @@ describe('tokens', () => {
     ['issued by another server', () => sign({ iss: 'https://evil.example' })],
     ['that has expired', () => sign({ exp: Math.floor(Date.now() / 1000) - 120 })],
     ['that is not yet valid', () => sign({ nbf: Math.floor(Date.now() / 1000) + 120 })],
-    ['signed with a shared secret', () => sign({}, 'HS256')],
+    ['signed with a shared secret from the key set', () => sign({}, 'shared')],
     ['without a client', () => sign({ client_id: undefined })],
     ['that is malformed', async () => 'not-a-jwt'],
   ];
@@ -195,16 +228,23 @@ describe('tokens', () => {
     expect(writer.status).toBe(200);
   });
 
-  test('an unreachable key set is a server error, not an invalid token', async () => {
-    const logs: LogEntry[] = [];
-    const app = oauthApp({ OAUTH_JWKS_URL: 'http://127.0.0.1:9/jwks.json' }, logs);
-    const response = await post(app, message('tools/list'), bearer(await sign({})));
+  const unavailable: Array<[string, () => string]> = [
+    ['unreachable', () => 'http://127.0.0.1:9/jwks.json'],
+    ['answering 503', () => `${issuer}/down`],
+    ['answering HTML', () => `${issuer}/html`],
+  ];
+  for (const [label, url] of unavailable) {
+    test(`a key set ${label} is a server error, not an invalid token`, async () => {
+      const logs: LogEntry[] = [];
+      const app = oauthApp({ OAUTH_JWKS_URL: url() }, logs);
+      const response = await post(app, message('tools/list'), bearer(await sign({})));
 
-    expect(response.status).toBe(500);
-    expect(await response.json()).toMatchObject({ error: 'server_error' });
-    expect(logs.map(({ level, message }) => [level, message])).toContainEqual([
-      'error',
-      'Could not load the authorization server key set',
-    ]);
-  });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({ error: 'server_error' });
+      expect(logs.map(({ level, message }) => [level, message])).toContainEqual([
+        'error',
+        'Could not load the authorization server key set',
+      ]);
+    });
+  }
 });

@@ -39,18 +39,22 @@ describe('logger', () => {
 
   test('redacts secrets by key, at any depth', () => {
     createLogger('info').info('request', {
-      headers: { authorization: 'Bearer abc', 'x-api-key': 'k' },
+      headers: { authorization: 'Bearer abc', 'x-api-key': 'k', cookie: 'c' },
       accessToken: 't',
       client_secret: 's',
-      nested: [{ password: 'p' }],
+      privateKey: 'pk',
+      nested: [{ password: 'p', pwd: 'p' }],
+      key: 'cache-key',
       tokenizer: 'not a secret',
     });
 
     expect(lines[0]).toMatchObject({
-      headers: { authorization: '[REDACTED]', 'x-api-key': '[REDACTED]' },
+      headers: { authorization: '[REDACTED]', 'x-api-key': '[REDACTED]', cookie: '[REDACTED]' },
       accessToken: '[REDACTED]',
       client_secret: '[REDACTED]',
-      nested: [{ password: '[REDACTED]' }],
+      privateKey: '[REDACTED]',
+      nested: [{ password: '[REDACTED]', pwd: '[REDACTED]' }],
+      key: 'cache-key',
       tokenizer: 'not a secret',
     });
   });
@@ -65,6 +69,19 @@ describe('logger', () => {
     expect(logged).not.toContain('SECRET');
     expect(logged).not.toContain(jwt);
     expect(logged).toContain('api_key=[REDACTED]&q=1');
+  });
+
+  test('redacts basic credentials, passwords in URLs, and bare token assignments', () => {
+    createLogger('info').warning('upstream', {
+      header: 'Authorization: Basic dXNlcjpwYXNz',
+      url: 'https://user:hunter2@api.example.com/v1',
+      detail: 'retry with token=abc123 failed',
+    });
+
+    const logged = JSON.stringify(lines[0]);
+    for (const secret of ['dXNlcjpwYXNz', 'hunter2', 'abc123']) {
+      expect(logged).not.toContain(secret);
+    }
   });
 
   test('serializes errors with their cause, and survives cycles', () => {

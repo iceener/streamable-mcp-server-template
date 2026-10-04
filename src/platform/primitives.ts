@@ -10,13 +10,12 @@ import {
   ProtocolErrorCode,
   type ReadResourceResult,
   type ResourceMetadata,
-  type ResourceTemplate,
+  ResourceTemplate,
   type ScopeChallengeHandler,
   type ServerContext,
   type StandardSchemaWithJSON,
   type ToolAnnotations,
   type ToolCallback,
-  UrlElicitationRequiredError,
   type Variables,
 } from '@modelcontextprotocol/server';
 import type { Deps } from '../server';
@@ -30,6 +29,10 @@ import type { Deps } from '../server';
  *     throw `ProtocolError` or `ResourceNotFoundError` from a resource or prompt. Anything
  *     else thrown is a bug: it is logged with a reference, and the client gets only the
  *     reference, never the message, which may carry upstream URLs or data.
+ *
+ * The policy covers tool calls, resource reads, resource template `list` and `complete`
+ * callbacks, and prompt gets. Completers inside `completable()` run outside it; keep them
+ * to filtering local values.
  */
 export interface Definition {
   readonly name: string;
@@ -37,7 +40,6 @@ export interface Definition {
 }
 
 type MaybePromise<T> = T | Promise<T>;
-type ToolResult = CallToolResult | InputRequiredResult;
 
 export interface ToolConfig<Input, Output> {
   title?: string;
@@ -51,27 +53,41 @@ export interface ToolConfig<Input, Output> {
   _meta?: Record<string, unknown>;
 }
 
-export type ToolHandler<Input extends StandardSchemaWithJSON | undefined> =
-  Input extends StandardSchemaWithJSON
-    ? (
-        args: StandardSchemaWithJSON.InferOutput<Input>,
-        ctx: ServerContext,
-        deps: Deps,
-      ) => MaybePromise<ToolResult>
-    : (ctx: ServerContext, deps: Deps) => MaybePromise<ToolResult>;
+/** A tool result whose `structuredContent` is checked against `outputSchema` at compile time. */
+export type ToolResult<Output extends StandardSchemaWithJSON> =
+  | (CallToolResult & { structuredContent?: StandardSchemaWithJSON.InferOutput<Output> })
+  | InputRequiredResult;
+
+/** An error result: text for the model, and no structured content. */
+export type ToolErrorResult = CallToolResult & { isError: true; structuredContent?: never };
+
+export type ToolHandler<
+  Input extends StandardSchemaWithJSON | undefined,
+  Output extends StandardSchemaWithJSON,
+> = Input extends StandardSchemaWithJSON
+  ? (
+      args: StandardSchemaWithJSON.InferOutput<Input>,
+      ctx: ServerContext,
+      deps: Deps,
+    ) => MaybePromise<ToolResult<Output>>
+  : (ctx: ServerContext, deps: Deps) => MaybePromise<ToolResult<Output>>;
 
 export function defineTool<
   Output extends StandardSchemaWithJSON,
   Input extends StandardSchemaWithJSON | undefined = undefined,
->(name: string, config: ToolConfig<Input, Output>, handler: ToolHandler<Input>): Definition {
+>(
+  name: string,
+  config: ToolConfig<Input, Output>,
+  handler: ToolHandler<Input, Output>,
+): Definition {
   return {
     name,
     register(server, deps) {
       const callback = withErrorPolicy(handler, deps, (error, ctx) => {
         const reference = logUnexpected(deps, 'tool', name, ctx, error);
         return toolError(
-          `The ${name} tool failed because of an internal error (reference ${reference}). ` +
-            'Retrying will not help; tell the user.',
+          `The ${name} tool failed with an internal error (reference ${reference}). ` +
+            'Tell the user; the server logs have the details.',
         );
       });
       server.registerTool<Output, Input>(name, config, callback as ToolCallback<Input>);
@@ -80,7 +96,7 @@ export function defineTool<
 }
 
 /** A failure the model should read and recover from. Put the fix in the message. */
-export function toolError(message: string): CallToolResult {
+export function toolError(message: string): ToolErrorResult {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
@@ -104,36 +120,47 @@ type ResourceConfig = ResourceMetadata & {
   scopeChallenge?: ScopeChallengeHandler;
 };
 type ResourceResult = MaybePromise<ReadResourceResult | InputRequiredResult>;
+type TemplateRead = (
+  uri: URL,
+  variables: Variables,
+  ctx: ServerContext,
+  deps: Deps,
+) => ResourceResult;
 
+/** A static resource: one fixed URI. */
 export function defineResource(
   name: string,
   uri: string,
   config: ResourceConfig,
   read: (uri: URL, ctx: ServerContext, deps: Deps) => ResourceResult,
 ): Definition;
+/**
+ * A resource template. Pass a function of `deps` when its `list` or `complete` callbacks
+ * need services; it runs once per request, when the server is built.
+ */
 export function defineResource(
   name: string,
-  template: ResourceTemplate,
+  template: ResourceTemplate | ((deps: Deps) => ResourceTemplate),
   config: ResourceConfig,
-  read: (uri: URL, variables: Variables, ctx: ServerContext, deps: Deps) => ResourceResult,
+  read: TemplateRead,
 ): Definition;
 export function defineResource(
   name: string,
-  uriOrTemplate: string | ResourceTemplate,
+  uriOrTemplate: string | ResourceTemplate | ((deps: Deps) => ResourceTemplate),
   config: ResourceConfig,
   read: (...args: never[]) => ResourceResult,
 ): Definition {
   return {
     name,
     register(server, deps) {
-      const callback = withErrorPolicy(read, deps, (error, ctx) => {
-        throw internalError(logUnexpected(deps, 'resource', name, ctx, error));
-      });
+      const policy = protocolErrorPolicy(deps, 'resource', name);
+      const callback = withErrorPolicy(read, deps, policy);
       if (typeof uriOrTemplate === 'string') {
         server.registerResource(name, uriOrTemplate, config, callback);
-      } else {
-        server.registerResource(name, uriOrTemplate, config, callback);
+        return;
       }
+      const template = typeof uriOrTemplate === 'function' ? uriOrTemplate(deps) : uriOrTemplate;
+      server.registerResource(name, withSafeCallbacks(template, policy), config, callback);
     },
   };
 }
@@ -166,9 +193,7 @@ export function definePrompt<Args extends StandardSchemaWithJSON | undefined = u
   return {
     name,
     register(server, deps) {
-      const callback = withErrorPolicy(handler, deps, (error, ctx) => {
-        throw internalError(logUnexpected(deps, 'prompt', name, ctx, error));
-      });
+      const callback = withErrorPolicy(handler, deps, protocolErrorPolicy(deps, 'prompt', name));
       server.registerPrompt(
         name,
         config as PromptConfig<StandardSchemaWithJSON>,
@@ -178,6 +203,8 @@ export function definePrompt<Args extends StandardSchemaWithJSON | undefined = u
   };
 }
 
+type Policy<Result> = (error: unknown, ctx: ServerContext | undefined) => Result;
+
 /**
  * Wrap a handler so it receives `deps` after the SDK's own arguments. Every SDK callback
  * passes the request context last: `(args, ctx)`, `(ctx)`, `(uri, ctx)` or `(uri, vars, ctx)`.
@@ -185,7 +212,7 @@ export function definePrompt<Args extends StandardSchemaWithJSON | undefined = u
 function withErrorPolicy<Result>(
   handler: (...args: never[]) => MaybePromise<Result>,
   deps: Deps,
-  onUnexpected: (error: unknown, ctx: ServerContext) => Result,
+  onUnexpected: Policy<Result>,
 ): (...args: unknown[]) => Promise<Result> {
   // Each define* function types its handler precisely; here it is called with what the SDK passed.
   const call = handler as (...args: unknown[]) => MaybePromise<Result>;
@@ -194,37 +221,66 @@ function withErrorPolicy<Result>(
     try {
       return await call(...args, deps);
     } catch (error) {
-      if (isDeliberate(error) || ctx.mcpReq.signal.aborted) throw error;
+      // Deliberate protocol errors and cancellations are the SDK's to answer.
+      if (ProtocolError.isInstance(error) || ctx.mcpReq.signal.aborted) throw error;
       return onUnexpected(error, ctx);
     }
   };
 }
 
-/** Errors the SDK turns into the right response on its own. */
-function isDeliberate(error: unknown): boolean {
-  return ProtocolError.isInstance(error) || error instanceof UrlElicitationRequiredError;
+/** Resource and prompt failures reach the client as a JSON-RPC error carrying a reference. */
+function protocolErrorPolicy(deps: Deps, kind: Kind, name: string): Policy<never> {
+  return (error, ctx) => {
+    const reference = logUnexpected(deps, kind, name, ctx, error);
+    throw new ProtocolError(
+      ProtocolErrorCode.InternalError,
+      `Internal error (reference ${reference})`,
+    );
+  };
 }
 
+/** The same template, with its `list` and `complete` callbacks under the error policy. */
+function withSafeCallbacks(template: ResourceTemplate, policy: Policy<never>): ResourceTemplate {
+  const guard =
+    <Args extends unknown[], Result>(callback: (...args: Args) => MaybePromise<Result>) =>
+    async (...args: Args): Promise<Result> => {
+      try {
+        return await callback(...args);
+      } catch (error) {
+        if (ProtocolError.isInstance(error)) throw error;
+        return policy(error, undefined);
+      }
+    };
+
+  const list = template.listCallback;
+  const complete = Object.fromEntries(
+    template.uriTemplate.variableNames.flatMap((variable) => {
+      const callback = template.completeCallback(variable);
+      return callback ? [[variable, guard(callback)]] : [];
+    }),
+  );
+  return new ResourceTemplate(template.uriTemplate, {
+    list: list && guard(list),
+    complete,
+  });
+}
+
+type Kind = 'tool' | 'resource' | 'prompt';
+
+/** Log an unexpected failure at error level and return the reference to show the client. */
 function logUnexpected(
   deps: Deps,
-  kind: 'tool' | 'resource' | 'prompt',
+  kind: Kind,
   name: string,
-  ctx: ServerContext,
+  ctx: ServerContext | undefined,
   error: unknown,
 ): string {
   const reference = crypto.randomUUID();
   deps.logger.error(`Unexpected ${kind} failure`, {
     [kind]: name,
-    requestId: ctx.mcpReq.id,
     reference,
+    ...(ctx && { requestId: ctx.mcpReq.id }),
     error,
   });
   return reference;
-}
-
-function internalError(reference: string): ProtocolError {
-  return new ProtocolError(
-    ProtocolErrorCode.InternalError,
-    `Internal error (reference ${reference})`,
-  );
 }

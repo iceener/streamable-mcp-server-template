@@ -59,6 +59,13 @@ describe('production', () => {
     ]);
   });
 
+  test('an invalid value does not hide the other problems', () => {
+    const reported = problems({ NODE_ENV: 'production', PORT: 'eighty' });
+    expect(reported).toHaveLength(3);
+    expect(reported[0]).toStartWith('PORT:');
+    expect(reported).toContain('MCP_PUBLIC_URL is required in production');
+  });
+
   test('requires https everywhere', () => {
     expect(problems({ ...production, MCP_PUBLIC_URL: 'http://mcp.example.com/mcp' })).toEqual([
       'MCP_PUBLIC_URL must use https in production',
@@ -103,6 +110,12 @@ describe('public URL', () => {
 });
 
 describe('allowlists', () => {
+  test('the Host allowlist must include the public hostname', () => {
+    expect(problems({ ...production, MCP_ALLOWED_HOSTS: 'internal.example.com' })).toEqual([
+      'MCP_ALLOWED_HOSTS must include the public URL\'s hostname, "mcp.example.com"',
+    ]);
+  });
+
   test('entries are bare lowercase hostnames', () => {
     for (const entry of [
       'https://mcp.example.com',
@@ -164,4 +177,19 @@ describe('oauth', () => {
 test('names the variable and the accepted values for invalid enums', () => {
   expect(problems({ AUTH_MODE: 'basic' })[0]).toStartWith('AUTH_MODE:');
   expect(problems({ PORT: 'eighty' })[0]).toStartWith('PORT:');
+});
+
+describe('settings', () => {
+  test('project settings from src/settings.ts are validated and exposed', () => {
+    expect(parseConfig({}).settings).toEqual({});
+    expect(parseConfig({ OPEN_METEO_API_KEY: 'key' }).settings).toEqual({
+      OPEN_METEO_API_KEY: 'key',
+    });
+  });
+
+  test('their problems are reported with the platform ones', () => {
+    const reported = problems({ NODE_ENV: 'production', OPEN_METEO_API_KEY: 42 });
+    expect(reported.some((problem) => problem.startsWith('OPEN_METEO_API_KEY:'))).toBe(true);
+    expect(reported).toContain('MCP_PUBLIC_URL is required in production');
+  });
 });

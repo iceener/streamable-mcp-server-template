@@ -16,7 +16,10 @@ export interface JwtVerifierOptions {
   audience: string;
 }
 
-/** Asymmetric algorithms only: a JWKS never holds the shared secret an HS* token needs. */
+/**
+ * The algorithms tokens may be signed with (RFC 8725 asks verifiers to name them). jose
+ * already refuses symmetric ones like HS256 for a key set; this also rules out the rest.
+ */
 const ALGORITHMS = [
   'RS256',
   'RS384',
@@ -38,7 +41,7 @@ const CLOCK_TOLERANCE_SECONDS = 30;
  * Signature, issuer, audience, expiry and not-before are all checked before any handler runs.
  *
  * To verify tokens another way, such as RFC 7662 introspection, return your own
- * `OAuthTokenVerifier` from `createAuth` in `auth.ts`. Nothing else changes.
+ * `OAuthTokenVerifier` from `createVerifier` in `src/server.ts`.
  */
 export function createJwtVerifier(options: JwtVerifierOptions, logger: Logger): OAuthTokenVerifier {
   const keys = createRemoteJWKSet(options.jwksUrl, { timeoutDuration: 5_000 });
@@ -63,14 +66,16 @@ export function createJwtVerifier(options: JwtVerifierOptions, logger: Logger): 
         throw new OAuthError(OAuthErrorCode.InvalidToken, 'Access token has no client_id or azp');
       }
 
+      // Report the audience the token itself names, as the SDK expects: its `expectedResource`
+      // check then verifies it a second time, independently of this function.
+      const audience = [payload.aud ?? []].flat().find((entry) => entry === options.audience);
       const subject = stringClaim(payload.sub);
       return {
         token,
         clientId,
         scopes: scopesOf(payload),
         expiresAt: payload.exp as number,
-        // jose accepted the token only because `aud` contains this exact value.
-        resource: new URL(options.audience),
+        ...(audience && { resource: new URL(audience) }),
         ...(subject && { extra: { subject } }),
       };
     },
@@ -78,14 +83,17 @@ export function createJwtVerifier(options: JwtVerifierOptions, logger: Logger): 
 }
 
 /**
- * A token we could not check is not an invalid token. When the key set cannot be fetched,
- * answer 500 so clients keep the token and retry instead of starting a new authorization.
+ * A token we could not check is not an invalid token. When the key set cannot be fetched or
+ * read (network failure, timeout, an error status, a body that isn't a JWKS), answer 500 so
+ * clients keep the token and retry instead of starting a new authorization.
  */
 function toOAuthError(error: unknown, logger: Logger): OAuthError {
   const keySetUnavailable =
     !(error instanceof errors.JOSEError) ||
     error instanceof errors.JWKSTimeout ||
-    error instanceof errors.JWKSInvalid;
+    error instanceof errors.JWKSInvalid ||
+    // jose reports a non-200 or non-JSON key set response with its generic error class.
+    error.code === errors.JOSEError.code;
 
   if (keySetUnavailable) {
     logger.error('Could not load the authorization server key set', { error });

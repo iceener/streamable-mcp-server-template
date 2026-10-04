@@ -8,22 +8,35 @@ A rewrite around the SDK's recommended remote-server setup. Projects started fro
 
 ### Added
 
-- `defineTool`, `defineResource` and `definePrompt`: the SDK's registration signatures, plus dependencies as the handler's last argument, plus one error policy. Unexpected errors are logged with a reference and never shown to clients.
-- Samples that each show one pattern. A weather tool backed by Open-Meteo covers services, cancellation, progress and recoverable errors. `whoami` reads the caller. `confirm-action` shows `input_required` and a per-tool OAuth scope. There is also a static resource, a resource template with completion, and a prompt with completion.
-- OAuth resource-server mode with audience binding (`expectedResource`), per-tool scope challenges, and RFC 9728 metadata. The raw bearer token is removed before any handler runs.
-- `bun run token`: a local authorization server for trying OAuth.
-- In-process tests per tool, as the SDK's testing guide recommends. Platform tests run against a fixture server and don't depend on the samples. Smoke tests run the real server on Bun and on workerd.
+- **`defineTool`, `defineResource` and `definePrompt`.** They take the SDK's registration signatures, pass dependencies as the handler's last argument, and apply one error policy to tool calls, resource reads, template `list`/`complete` callbacks and prompt gets. Unexpected errors are logged with a reference; the client sees only the reference. Tools get `structuredContent` checked against `outputSchema` at compile time, and resource templates can be built from dependencies.
+- **Samples that each show one pattern:**
+  - A weather tool backed by Open-Meteo: services, cancellation, progress, recoverable errors, and an optional API key.
+  - `whoami`, which reads the verified caller.
+  - `confirm-action`, which shows `input_required` and a per-tool OAuth scope.
+  - A static resource, a resource template with completion, and a prompt with completion.
+- **OAuth resource-server mode.** Tokens must be issued for this server (audience checked by the verifier and again by `expectedResource`). Per-tool scope challenges and RFC 9728 metadata are supported. Handlers see the verified caller but neither the token nor the `Authorization` header. Token verification is chosen in `createVerifier` in `src/server.ts`.
+- **`src/settings.ts`** for your own settings, such as API keys, validated together with the platform's configuration.
+- **`bun run token`:** a local authorization server for trying OAuth, with a key that survives restarts.
+- **Tests:**
+  - In-process tests per tool and per service, as the SDK's testing guide recommends.
+  - Platform tests that run against a fixture server, so they don't depend on the samples.
+  - Smoke tests that run the real server on Bun, and on workerd in OAuth mode.
 - `bun run check`, GitHub Actions CI, a `production` Wrangler environment, `docs/`, and a LICENSE file.
 
 ### Changed
 
-- SDK 2.3.0: JSON-RPC batches are capped at 100 messages, `MCP-Protocol-Version` is required on 2026-07-28 requests, and tool schemas are converted lazily.
-- Server identity (name, version, instructions) moved from environment variables into `src/server.ts`.
-- Configuration is validated with one schema, and every problem is reported at once. Production requires `MCP_PUBLIC_URL` and `AUTH_MODE`. Host and Origin allowlist entries are validated.
-- `AUTH_ENABLED` is replaced by `AUTH_MODE` (`none` or `oauth`). The token audience is always `MCP_PUBLIC_URL`.
-- A JWKS outage now answers `500` instead of `401 invalid_token`.
-- Bun's `idleTimeout` is raised so SSE streams survive quiet periods. On shutdown, requests in progress get time to finish.
-- Change notifications are no longer advertised. Nothing published them, and listeners waited forever.
+- **SDK 2.3.0:** JSON-RPC batches are capped at 100 messages, `MCP-Protocol-Version` is required on 2026-07-28 requests, and tool schemas are converted lazily.
+- **Server identity** (name, version, instructions) moved from environment variables into `src/server.ts`. `package.json` no longer carries a version.
+- **Configuration:**
+  - It is validated in one pass that reports every problem at once.
+  - Production requires `MCP_PUBLIC_URL` and `AUTH_MODE`.
+  - Host and Origin allowlist entries are validated, and the Host allowlist must include the public hostname.
+- **Auth settings:** `AUTH_ENABLED` is replaced by `AUTH_MODE` (`none` or `oauth`). The token audience is always `MCP_PUBLIC_URL`.
+- **Startup:** the server is built once at startup, so registration mistakes stop it instead of failing every request.
+- **Key-set failures:** a key set that is unreachable, answers an error, or isn't a key set now answers `500` instead of `401 invalid_token`, and is logged at `error`.
+- **Bun:** `idleTimeout` is raised so SSE streams survive quiet periods. On shutdown, requests in progress get time to finish.
+- **CORS:** preflight accepts any request header from an allowed origin.
+- **Change notifications** are no longer advertised. Nothing published them, and listeners waited forever.
 
 ### Removed
 

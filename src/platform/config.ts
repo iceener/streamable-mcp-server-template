@@ -1,12 +1,17 @@
-import { DEFAULT_MAX_REQUEST_BODY_SIZE } from '@modelcontextprotocol/server';
+import {
+  DEFAULT_MAX_REQUEST_BODY_SIZE,
+  localhostAllowedHostnames,
+} from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import { Settings } from '../settings';
 
 export type Environment = 'development' | 'production' | 'test';
 export type LogLevel = 'debug' | 'info' | 'warning' | 'error';
 
 /**
  * Deployment configuration: what changes between local, staging and production.
- * Server identity (name, version, instructions) is code, in `src/server.ts`.
+ * Server identity (name, version, instructions) is code, in `src/server.ts`; settings your
+ * own code needs (API keys, flags) are declared in `src/settings.ts`.
  */
 export interface Config {
   environment: Environment;
@@ -25,6 +30,8 @@ export interface Config {
   /** Largest request body the SDK will read, in bytes. */
   maxRequestBytes: number;
   auth: AuthConfig;
+  /** Your own settings, declared in `src/settings.ts`. */
+  settings: Settings;
 }
 
 export type AuthConfig = { mode: 'none' } | OAuthConfig;
@@ -49,7 +56,7 @@ export class ConfigError extends Error {
   }
 }
 
-const LOOPBACK_HOSTNAMES = ['localhost', '127.0.0.1', '[::1]'];
+const LOOPBACK_HOSTNAMES = localhostAllowedHostnames();
 /** Stands in for a missing or invalid URL while the remaining settings are checked. */
 const UNSET_URL = 'https://unset.invalid/';
 const HOSTNAME = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/;
@@ -85,21 +92,35 @@ export function parseConfig(source: Readonly<Record<string, unknown>>): Config {
   const present = Object.fromEntries(
     Object.entries(source).filter(([, value]) => value !== undefined && value !== ''),
   );
-  const parsed = EnvSchema.safeParse(present);
-  if (!parsed.success) {
-    throw new ConfigError(
-      parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
-    );
-  }
-
-  const env = parsed.data;
   const problems: string[] = [];
-  const config = buildConfig(env, problems);
+  const env = parseLeniently(EnvSchema, present, problems);
+  const settings = parseLeniently(Settings, present, problems);
+  const config = buildConfig(env, settings, problems);
   if (problems.length > 0) throw new ConfigError(problems);
   return config;
 }
 
-function buildConfig(env: Env, problems: string[]): Config {
+/**
+ * Report every invalid variable, then parse again without them, so the checks that follow
+ * still run on defaults and can report their own problems in the same pass.
+ */
+function parseLeniently<Schema extends z.ZodObject>(
+  schema: Schema,
+  values: Record<string, unknown>,
+  problems: string[],
+): z.infer<Schema> {
+  const result = schema.safeParse(values);
+  if (result.success) return result.data;
+
+  const invalid = new Set(result.error.issues.map((issue) => String(issue.path[0])));
+  for (const issue of result.error.issues)
+    problems.push(`${issue.path.join('.')}: ${issue.message}`);
+  return schema.parse(
+    Object.fromEntries(Object.entries(values).filter(([name]) => !invalid.has(name))),
+  );
+}
+
+function buildConfig(env: Env, settings: Settings, problems: string[]): Config {
   const production = env.NODE_ENV === 'production';
   const publicUrl = resolvePublicUrl(env, problems);
   const defaultHostnames = unique([publicUrl.hostname, ...(production ? [] : LOOPBACK_HOSTNAMES)]);
@@ -110,16 +131,23 @@ function buildConfig(env: Env, problems: string[]): Config {
     );
   }
 
+  const allowedHosts =
+    parseHostnames('MCP_ALLOWED_HOSTS', env.MCP_ALLOWED_HOSTS, problems, {
+      extensionOrigins: false,
+    }) ?? defaultHostnames;
+  if (env.MCP_PUBLIC_URL && !allowedHosts.includes(publicUrl.hostname)) {
+    problems.push(
+      `MCP_ALLOWED_HOSTS must include the public URL's hostname, "${publicUrl.hostname}"`,
+    );
+  }
+
   return {
     environment: env.NODE_ENV,
     logLevel: env.LOG_LEVEL,
     host: env.HOST,
     port: env.PORT,
     publicUrl,
-    allowedHosts:
-      parseHostnames('MCP_ALLOWED_HOSTS', env.MCP_ALLOWED_HOSTS, problems, {
-        extensionOrigins: false,
-      }) ?? defaultHostnames,
+    allowedHosts,
     allowedOrigins:
       parseHostnames('MCP_ALLOWED_ORIGIN_HOSTNAMES', env.MCP_ALLOWED_ORIGIN_HOSTNAMES, problems, {
         extensionOrigins: true,
@@ -127,6 +155,7 @@ function buildConfig(env: Env, problems: string[]): Config {
     legacy: env.MCP_LEGACY_MODE,
     maxRequestBytes: env.MCP_MAX_REQUEST_BYTES,
     auth: env.AUTH_MODE === 'oauth' ? parseOAuth(env, problems) : { mode: 'none' },
+    settings,
   };
 }
 
