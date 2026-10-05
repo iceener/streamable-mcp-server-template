@@ -26,6 +26,8 @@ On `workers.dev` the URL is `https://<name>.<your-subdomain>.workers.dev/mcp`. T
 
 **Secrets.** Declare API keys in `src/settings.ts`, then store each value with `bunx wrangler secret put NAME --env production`. Never put secrets in `vars`. For local `wrangler dev`, put them in `.dev.vars`; it is gitignored.
 
+**Local `.env` files.** Every Wrangler command, `deploy` included, loads `.env`, `.env.local`, `.env.production` and `.env.production.local` into its own environment. They don't become Worker vars, but a `CLOUDFLARE_*` or `WRANGLER_*` name in them, such as `CLOUDFLARE_ACCOUNT_ID`, changes what Wrangler does. Keep those names out of the Bun `.env`, or pass `--env-file` to choose the files.
+
 **Types.** After you change `wrangler.jsonc`, run `bun run types:worker`. `bun run check` fails while the generated `worker-configuration.d.ts` is out of date.
 
 **Logs.** `observability` is on, and the server logs JSON, so Workers Logs can filter on fields like `level`, `tool` and `reference`. When a client reports `reference 2bcc…`, search for it there.
