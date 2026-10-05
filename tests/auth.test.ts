@@ -1,7 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { base64url, exportJWK, generateKeyPair, type JWTPayload, SignJWT } from 'jose';
-import type { App } from '../src/platform/app';
+import { type App, createApp } from '../src/platform/app';
+import { createAuth } from '../src/platform/auth';
+import { ConfigError } from '../src/platform/config';
+import { createJwtVerifier } from '../src/platform/jwt';
 import { serverInfo } from '../src/server';
 import {
   cleanup,
@@ -247,4 +250,54 @@ describe('tokens', () => {
       ]);
     });
   }
+});
+
+describe('audience, checked twice', () => {
+  test('the JWT verifier rejects a token for another server on its own', async () => {
+    const verifier = createJwtVerifier(
+      { issuer, jwksUrl: new URL(`${issuer}/jwks.json`), audience: PUBLIC_URL },
+      memoryLogger(),
+    );
+    const token = await sign({ aud: 'https://other.example/mcp' });
+
+    await expect(verifier.verifyAccessToken(token)).rejects.toMatchObject({
+      code: 'invalid_token',
+    });
+  });
+
+  test('the gate rejects whatever verifier reports another resource', async () => {
+    const config = testConfig({
+      AUTH_MODE: 'oauth',
+      OAUTH_ISSUER_URL: issuer,
+      OAUTH_AUTHORIZATION_URL: `${issuer}/authorize`,
+      OAUTH_TOKEN_URL: `${issuer}/token`,
+    });
+    if (config.auth.mode !== 'oauth') throw new Error('expected oauth');
+    const lenient = {
+      verifyAccessToken: async (token: string) => ({
+        token,
+        clientId: 'client',
+        scopes: [],
+        expiresAt: Math.floor(Date.now() / 1000) + 60,
+        resource: new URL('https://other.example/mcp'),
+      }),
+    };
+    const { gate } = createAuth(config, config.auth, lenient, 'test');
+
+    const result = await gate(
+      new Request(PUBLIC_URL, { headers: { Authorization: 'Bearer anything' } }),
+    );
+    expect(result).toBeInstanceOf(Response);
+    expect((result as Response).status).toBe(401);
+  });
+});
+
+test('the default JWT verifier needs OAUTH_JWKS_URL', () => {
+  const config = testConfig({
+    AUTH_MODE: 'oauth',
+    OAUTH_ISSUER_URL: issuer,
+    OAUTH_AUTHORIZATION_URL: `${issuer}/authorize`,
+    OAUTH_TOKEN_URL: `${issuer}/token`,
+  });
+  expect(() => createApp(config, { deps: testDeps({ config }) })).toThrow(ConfigError);
 });

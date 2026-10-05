@@ -6,6 +6,7 @@ import type {
   McpServerFactory,
 } from '@modelcontextprotocol/server';
 import { createMcpHandler } from '@modelcontextprotocol/server';
+import type { Hono } from 'hono';
 import { type App, createApp } from '../src/platform/app';
 import { type Config, parseConfig } from '../src/platform/config';
 import type { LogFields, Logger } from '../src/platform/logger';
@@ -145,6 +146,7 @@ export interface TestAppOptions {
   deps?: Deps;
   /** Defaults to the fixture server, so platform tests don't depend on the samples. */
   server?: (deps: Deps) => McpServerFactory;
+  routes?: (app: Hono, deps: Deps) => void;
 }
 
 /** The full app (Host/Origin guards, auth, CORS) as a fetch function, for HTTP-level tests. */
@@ -153,6 +155,7 @@ export function testApp(config: Config = testConfig(), options: TestAppOptions =
     createApp(config, {
       deps: options.deps ?? testDeps({ config }),
       server: options.server ?? fixtureServer,
+      ...(options.routes && { routes: options.routes }),
     }),
   );
 }

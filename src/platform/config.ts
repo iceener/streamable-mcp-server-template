@@ -44,7 +44,8 @@ export interface OAuthConfig {
   authorizationUrl: URL;
   tokenUrl: URL;
   registrationUrl: URL | undefined;
-  jwksUrl: URL;
+  /** Where the authorization server publishes its keys. The JWT verifier needs it. */
+  jwksUrl: URL | undefined;
   /** Scopes every request must carry. Tools that need more declare a `scopeChallenge`. */
   scopes: string[];
 }
@@ -88,13 +89,16 @@ type Env = z.infer<typeof EnvSchema>;
  * Parse `process.env` (Bun) or the Worker `env`. Empty values count as unset.
  * Every problem is reported at once, so a misconfigured deploy fails with one clear message.
  */
-export function parseConfig(source: Readonly<Record<string, unknown>>): Config {
+export function parseConfig(
+  source: Readonly<Record<string, unknown>>,
+  settingsSchema: z.ZodType<Settings> = Settings,
+): Config {
   const present = Object.fromEntries(
     Object.entries(source).filter(([, value]) => value !== undefined && value !== ''),
   );
   const problems: string[] = [];
   const env = parseLeniently(EnvSchema, present, problems);
-  const settings = parseLeniently(Settings, present, problems);
+  const settings = parseLeniently(settingsSchema, present, problems);
   const config = buildConfig(env, settings, problems);
   if (problems.length > 0) throw new ConfigError(problems);
   return config;
@@ -104,20 +108,27 @@ export function parseConfig(source: Readonly<Record<string, unknown>>): Config {
  * Report every invalid variable, then parse again without them, so the checks that follow
  * still run on defaults and can report their own problems in the same pass.
  */
-function parseLeniently<Schema extends z.ZodObject>(
-  schema: Schema,
+function parseLeniently<Output>(
+  schema: z.ZodType<Output>,
   values: Record<string, unknown>,
   problems: string[],
-): z.infer<Schema> {
+): Output {
   const result = schema.safeParse(values);
   if (result.success) return result.data;
 
+  for (const issue of result.error.issues) {
+    problems.push(
+      issue.path.length > 0 ? `${issue.path.join('.')}: ${issue.message}` : issue.message,
+    );
+  }
   const invalid = new Set(result.error.issues.map((issue) => String(issue.path[0])));
-  for (const issue of result.error.issues)
-    problems.push(`${issue.path.join('.')}: ${issue.message}`);
-  return schema.parse(
+  const retry = schema.safeParse(
     Object.fromEntries(Object.entries(values).filter(([name]) => !invalid.has(name))),
   );
+  // The platform schema always parses once invalid values are gone, since every field has a
+  // default or is optional. Yours may not (a required key is missing); its value is then never
+  // used, because problems were found and parseConfig throws.
+  return retry.success ? retry.data : ({} as Output);
 }
 
 function buildConfig(env: Env, settings: Settings, problems: string[]): Config {
@@ -135,7 +146,7 @@ function buildConfig(env: Env, settings: Settings, problems: string[]): Config {
     parseHostnames('MCP_ALLOWED_HOSTS', env.MCP_ALLOWED_HOSTS, problems, {
       extensionOrigins: false,
     }) ?? defaultHostnames;
-  if (env.MCP_PUBLIC_URL && !allowedHosts.includes(publicUrl.hostname)) {
+  if (publicUrl.href !== UNSET_URL && !allowedHosts.includes(publicUrl.hostname)) {
     problems.push(
       `MCP_ALLOWED_HOSTS must include the public URL's hostname, "${publicUrl.hostname}"`,
     );
@@ -164,7 +175,6 @@ function parseOAuth(env: Env, problems: string[]): OAuthConfig {
     OAUTH_ISSUER_URL: env.OAUTH_ISSUER_URL,
     OAUTH_AUTHORIZATION_URL: env.OAUTH_AUTHORIZATION_URL,
     OAUTH_TOKEN_URL: env.OAUTH_TOKEN_URL,
-    OAUTH_JWKS_URL: env.OAUTH_JWKS_URL,
   };
   const missing = Object.entries(required)
     .filter(([, value]) => value === undefined)
@@ -193,7 +203,7 @@ function parseOAuth(env: Env, problems: string[]): OAuthConfig {
     registrationUrl: env.OAUTH_REGISTRATION_URL
       ? url('OAUTH_REGISTRATION_URL', env.OAUTH_REGISTRATION_URL)
       : undefined,
-    jwksUrl: url('OAUTH_JWKS_URL', env.OAUTH_JWKS_URL),
+    jwksUrl: env.OAUTH_JWKS_URL ? url('OAUTH_JWKS_URL', env.OAUTH_JWKS_URL) : undefined,
     scopes,
   };
 }

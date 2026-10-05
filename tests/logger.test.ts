@@ -76,12 +76,15 @@ describe('logger', () => {
       header: 'Authorization: Basic dXNlcjpwYXNz',
       url: 'https://user:hunter2@api.example.com/v1',
       detail: 'retry with token=abc123 failed',
+      callback: 'https://app.example.com/callback?code=one-time&state=s',
+      status: 'upstream answered status code=503',
     });
 
     const logged = JSON.stringify(lines[0]);
-    for (const secret of ['dXNlcjpwYXNz', 'hunter2', 'abc123']) {
+    for (const secret of ['dXNlcjpwYXNz', 'hunter2', 'abc123', 'one-time']) {
       expect(logged).not.toContain(secret);
     }
+    expect(logged).toContain('status code=503');
   });
 
   test('serializes errors with their cause, and survives cycles', () => {

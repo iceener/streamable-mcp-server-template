@@ -1,11 +1,12 @@
 import { type App, createApp } from './platform/app';
-import { parseConfig } from './platform/config';
+import { ConfigError, parseConfig } from './platform/config';
 import { createLogger } from './platform/logger';
 
 /**
  * Workers receive `env` with each request, so the app is built on the first request and
- * reused for the isolate's lifetime. Bad configuration is logged once and answered with a
- * generic 500; the details stay in Workers Logs, not in responses.
+ * reused for the isolate's lifetime. If that fails (bad configuration, or a registration
+ * mistake such as a duplicate tool name), it is logged once and every request gets a generic
+ * 500 until the next deploy; the details stay in Workers Logs, not in responses.
  */
 let app: App | undefined;
 let misconfigured = false;
@@ -17,7 +18,9 @@ export default {
         app = createApp(parseConfig({ ...env }));
       } catch (error) {
         misconfigured = true;
-        createLogger('error').error('Invalid configuration; fix it and redeploy', { error });
+        const message =
+          error instanceof ConfigError ? 'Invalid configuration' : 'The server failed to start';
+        createLogger('error').error(`${message}; fix it and redeploy`, { error });
       }
     }
     return app

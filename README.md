@@ -44,7 +44,7 @@ Each sample shows one pattern you'll need.
 
 ```
 src/
-  server.ts       Server identity, dependencies, token verification, the McpServer factory
+  server.ts       Server identity, dependencies, token verification, extra routes, the McpServer factory
   settings.ts     Settings your code needs: API keys, flags
   tools/          ┐
   resources/      │ Your code. One file per tool, resource or prompt;
@@ -57,7 +57,7 @@ tests/            In-process tests per tool and service, plus platform suites on
 scripts/          Smoke tests on real sockets, and a local token issuer
 ```
 
-You edit `server.ts`, `settings.ts` and the four folders. `platform/` is the part you take from the template: it relies only on what `server.ts` and `settings.ts` export, so you can update it from a newer template without merging your code.
+You edit `server.ts`, `settings.ts` and the four folders. `platform/` is the part you take from the template. It relies only on a fixed set of names that `server.ts` and `settings.ts` export, so most projects never change it, and a newer template's `platform/` drops in. The hooks cover the common needs: settings, token verification and extra HTTP routes.
 
 ## Add a tool
 

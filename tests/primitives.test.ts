@@ -184,12 +184,22 @@ describe('resource templates', () => {
 });
 
 describe('types', () => {
-  test('structuredContent must match outputSchema', () => {
+  test('structuredContent must match outputSchema, and is required with one', () => {
+    const Count = z.object({ count: z.number() });
     defineTool(
       'typed',
-      { description: 'Typed', outputSchema: z.object({ count: z.number() }) },
+      { description: 'Typed', outputSchema: Count },
       // @ts-expect-error "one" is not a number: `bun run typecheck` fails if this compiles.
       () => ({ content: [], structuredContent: { count: 'one' } }),
+    );
+    defineTool(
+      'missing',
+      { description: 'Typed', outputSchema: Count },
+      // @ts-expect-error a successful result without structuredContent would fail at runtime.
+      () => ({ content: [{ type: 'text', text: 'no data' }] }),
+    );
+    defineTool('failing', { description: 'Typed', outputSchema: Count }, () =>
+      toolError('Error results need no structured content.'),
     );
   });
 });

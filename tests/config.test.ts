@@ -1,11 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_MAX_REQUEST_BODY_SIZE } from '@modelcontextprotocol/server';
+import * as z from 'zod/v4';
 import { ConfigError, parseConfig } from '../src/platform/config';
+import type { Settings } from '../src/settings';
 
-/** The problems `parseConfig` reports for `env`, or `[]` when it is valid. */
-function problems(env: Record<string, unknown>): string[] {
+/**
+ * The problems `parseConfig` reports for `env`, or `[]` when it is valid. `settings` stands in
+ * for a project's own `src/settings.ts`, which has a different shape from the template's.
+ */
+function problems(env: Record<string, unknown>, settings?: z.ZodType): string[] {
   try {
-    parseConfig(env);
+    parseConfig(env, settings as z.ZodType<Settings> | undefined);
     return [];
   } catch (error) {
     if (error instanceof ConfigError) return error.problems;
@@ -123,13 +128,19 @@ describe('allowlists', () => {
       'MCP.example.com',
       '*',
     ]) {
-      expect(problems({ MCP_ALLOWED_HOSTS: entry })).toEqual([
+      expect(problems({ MCP_ALLOWED_HOSTS: `127.0.0.1,${entry}` })).toEqual([
         `MCP_ALLOWED_HOSTS entries are lowercase hostnames without scheme or port, got "${entry}"`,
       ]);
     }
-    expect(
-      parseConfig({ MCP_ALLOWED_HOSTS: ' a.example.com, [::1] ,a.example.com' }).allowedHosts,
-    ).toEqual(['a.example.com', '[::1]']);
+    expect(parseConfig({ MCP_ALLOWED_HOSTS: ' 127.0.0.1, [::1] ,127.0.0.1' }).allowedHosts).toEqual(
+      ['127.0.0.1', '[::1]'],
+    );
+  });
+
+  test('the Host check also covers the default public URL', () => {
+    expect(problems({ MCP_ALLOWED_HOSTS: 'localhost' })).toEqual([
+      'MCP_ALLOWED_HOSTS must include the public URL\'s hostname, "127.0.0.1"',
+    ]);
   });
 
   test('origins may also admit every extension of a browser', () => {
@@ -137,15 +148,17 @@ describe('allowlists', () => {
       parseConfig({ MCP_ALLOWED_ORIGIN_HOSTNAMES: 'moz-extension://*' }).allowedOrigins,
     ).toEqual(['moz-extension://*']);
     expect(problems({ MCP_ALLOWED_ORIGIN_HOSTNAMES: 'https://*' })).toHaveLength(1);
-    expect(problems({ MCP_ALLOWED_HOSTS: 'moz-extension://*' })).toHaveLength(1);
+    expect(problems({ MCP_ALLOWED_HOSTS: '127.0.0.1,moz-extension://*' })).toHaveLength(1);
   });
 });
 
 describe('oauth', () => {
-  test('needs the authorization server endpoints and key set', () => {
+  test('needs the authorization server endpoints; the key set is up to the verifier', () => {
     expect(problems({ AUTH_MODE: 'oauth' })).toEqual([
-      'AUTH_MODE=oauth requires OAUTH_ISSUER_URL, OAUTH_AUTHORIZATION_URL, OAUTH_TOKEN_URL, OAUTH_JWKS_URL',
+      'AUTH_MODE=oauth requires OAUTH_ISSUER_URL, OAUTH_AUTHORIZATION_URL, OAUTH_TOKEN_URL',
     ]);
+    const { OAUTH_JWKS_URL: _, ...withoutKeySet } = oauth;
+    expect(parseConfig(withoutKeySet).auth).toMatchObject({ mode: 'oauth', jwksUrl: undefined });
   });
 
   test('keeps the issuer exactly as written', () => {
@@ -185,6 +198,25 @@ describe('settings', () => {
     expect(parseConfig({ OPEN_METEO_API_KEY: 'key' }).settings).toEqual({
       OPEN_METEO_API_KEY: 'key',
     });
+  });
+
+  test('a missing required setting is reported with every other problem', () => {
+    const required = z.object({ PAYMENTS_API_KEY: z.string() });
+    const reported = problems({ NODE_ENV: 'production' }, required);
+
+    expect(reported.some((problem) => problem.startsWith('PAYMENTS_API_KEY:'))).toBe(true);
+    expect(reported).toContain('MCP_PUBLIC_URL is required in production');
+  });
+
+  test('a cross-field rule is reported too', () => {
+    const paired = z
+      .object({ CLIENT_ID: z.string().optional(), CLIENT_SECRET: z.string().optional() })
+      .refine((value) => !value.CLIENT_ID === !value.CLIENT_SECRET, {
+        message: 'CLIENT_ID and CLIENT_SECRET must be set together',
+      });
+    expect(problems({ CLIENT_ID: 'id' }, paired)).toEqual([
+      'CLIENT_ID and CLIENT_SECRET must be set together',
+    ]);
   });
 
   test('their problems are reported with the platform ones', () => {

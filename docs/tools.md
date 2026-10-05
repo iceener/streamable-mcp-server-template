@@ -9,7 +9,7 @@ Each tool, resource and prompt is one file. Each folder's `index.ts` lists them.
 1. **`deps` as the handler's last argument**: `(args, ctx, deps)`, `(ctx, deps)`, `(uri, ctx, deps)` or `(uri, variables, ctx, deps)`.
 2. **The error policy**, described below.
 
-For tools, `structuredContent` is also checked against `outputSchema` when you compile, so a result that doesn't match the schema you advertise fails `bun run typecheck`.
+For tools with an `outputSchema`, every successful result must include `structuredContent` that matches it, and `bun run typecheck` fails otherwise. Error results (`toolError`) need none.
 
 So any example from the [SDK's server docs](https://github.com/modelcontextprotocol/typescript-sdk/tree/main/docs/servers) works here. Replace `server.registerTool(` with `defineTool(` and add the definition to the list.
 
@@ -38,7 +38,7 @@ There are three kinds of failure, and each reaches a different audience:
 
 That last row is the policy. Without it, the SDK would send the exception's message to the client, and messages often contain upstream URLs, keys or response bodies. `get-forecast` shows all three cases: an unknown city, a weather service outage, and a response that fails validation.
 
-The policy covers tool calls, resource reads, resource template `list` and `complete` callbacks, and prompt gets. Two kinds of callback run outside it. Completers you pass to `completable()` live inside a schema the SDK owns, so keep them to filtering local values. A `scopeChallenge` that throws fails closed: the SDK answers 500 without the message.
+The policy covers tool calls, resource reads, resource template `list` and `complete` callbacks, and prompt gets. Two kinds of callback run outside it. `completable()` attaches its completer to the schema as a property that can't be replaced afterwards, so it can't be wrapped; keep completers to filtering local values. A `scopeChallenge` that throws fails closed: the SDK answers 500 without the message and reports it as a warning.
 
 Input that fails `inputSchema` never reaches your handler. The SDK returns a tool error naming the invalid fields.
 

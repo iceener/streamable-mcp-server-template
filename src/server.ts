@@ -1,7 +1,7 @@
 /**
  * The project's half of the template. `platform/` relies on exactly these exports:
- * `serverInfo`, `SERVER_ICON_PATH`, `SERVER_ICON_SVG`, `Deps`, `createDeps`, `createServer`
- * and `createVerifier`. Change what they contain, but keep their names and shapes.
+ * `serverInfo`, `SERVER_ICON_PATH`, `SERVER_ICON_SVG`, `Deps`, `createDeps`, `createServer`,
+ * `createVerifier` and `routes`. Change what they contain, but keep their names and shapes.
  */
 import {
   type CacheHint,
@@ -9,7 +9,8 @@ import {
   type McpServerFactory,
   type OAuthTokenVerifier,
 } from '@modelcontextprotocol/server';
-import type { Config, OAuthConfig } from './platform/config';
+import type { Hono } from 'hono';
+import { type Config, ConfigError, type OAuthConfig } from './platform/config';
 import { createJwtVerifier } from './platform/jwt';
 import type { Logger } from './platform/logger';
 import { prompts } from './prompts';
@@ -57,10 +58,21 @@ export function createDeps(config: Config, logger: Logger): Deps {
  * another scheme; docs/auth.md shows one.
  */
 export function createVerifier(oauth: OAuthConfig, deps: Deps): OAuthTokenVerifier {
+  if (!oauth.jwksUrl) {
+    throw new ConfigError(['OAUTH_JWKS_URL is required to verify JWT access tokens']);
+  }
   return createJwtVerifier(
     { issuer: oauth.issuer, jwksUrl: oauth.jwksUrl, audience: deps.config.publicUrl.href },
     deps.logger,
   );
+}
+
+/**
+ * Extra HTTP routes outside MCP: webhooks, OAuth callbacks, status pages. They sit behind the
+ * same Host and Origin checks as the MCP endpoint, but not behind its bearer token check.
+ */
+export function routes(_app: Hono, _deps: Deps): void {
+  // _app.post('/webhooks/provider', async (c) => { … });
 }
 
 /** Lists only change on deploy, and are the same for every caller. */

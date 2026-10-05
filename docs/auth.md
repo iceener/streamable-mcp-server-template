@@ -17,7 +17,7 @@ The built-in verifier (`src/platform/jwt.ts`) checks JWT access tokens locally a
 
 | Claim | Must be |
 |---|---|
-| signature | Valid for a key in `OAUTH_JWKS_URL`, with an asymmetric algorithm (RS, PS, ES or EdDSA) |
+| signature | Valid for a key in `OAUTH_JWKS_URL` (required for this verifier), with an asymmetric algorithm (RS, PS, ES or EdDSA) |
 | `iss` | Exactly `OAUTH_ISSUER_URL` |
 | `aud` | Contains exactly `MCP_PUBLIC_URL` |
 | `exp`, `nbf` | Current, allowing 30 s of clock difference |
@@ -92,16 +92,19 @@ export function createVerifier(oauth: OAuthConfig, deps: Deps): OAuthTokenVerifi
     async verifyAccessToken(token) {
       const claims = await deps.introspection.check(token); // your service
       if (!claims.active) throw new OAuthError(OAuthErrorCode.InvalidToken, 'Token is not active');
+      // `aud` may be one value or a list: report this server's entry.
+      const audience = [claims.aud].flat().find((aud) => aud === deps.config.publicUrl.href);
+      if (!audience) throw new OAuthError(OAuthErrorCode.InvalidToken, 'Token is for another server');
       return {
         token,
         clientId: claims.client_id,
         scopes: claims.scope.split(' '),
         expiresAt: claims.exp,
-        resource: new URL(claims.aud),
+        resource: new URL(audience),
       };
     },
   };
 }
 ```
 
-Throw `OAuthError(OAuthErrorCode.InvalidToken, …)` for a bad token; any other error becomes a `500`. Always set `expiresAt` and `resource`: the gate rejects tokens without them. A verifier that doesn't use `OAUTH_JWKS_URL` still needs it set unless you remove it from the required list in `src/platform/config.ts`.
+Throw `OAuthError(OAuthErrorCode.InvalidToken, …)` for a bad token; any other error becomes a `500`. Always set `expiresAt` and `resource`: the gate rejects tokens without them. `OAUTH_JWKS_URL` is only needed by the built-in JWT verifier, so leave it unset.

@@ -6,7 +6,9 @@ on:
   pull_request:
 
 env:
+  # Keep Wrangler offline apart from the deploy you never run here: no telemetry, no update check.
   WRANGLER_SEND_METRICS: false
+  WRANGLER_HIDE_BANNER: true
 
 jobs:
   check:

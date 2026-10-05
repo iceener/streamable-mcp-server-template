@@ -36,7 +36,7 @@ The SDK owns everything between the HTTP request and your handler: reading and b
 | Host and Origin checks on every route | `http.ts` | The SDK handler trusts its caller; the SDK docs say to put these in front of it. They stop DNS-rebinding and cross-site requests |
 | OAuth resource server | `auth.ts`, `jwt.ts` | `requireBearerAuth` with `expectedResource`, so only tokens issued for this server's URL are accepted |
 | Credentials removed before handlers | `http.ts` | The MCP spec forbids passing a client's token to other APIs. Handlers see the verified caller, but neither the token nor the `Authorization` header, so they can't pass it on by mistake |
-| `defineTool` / `defineResource` / `definePrompt` | `primitives.ts` | One error policy for tool calls, resource reads, template `list` and `complete` callbacks, and prompt gets. Unexpected errors are logged with a reference, and the client sees only the reference. Tools also get `structuredContent` checked against `outputSchema` at compile time |
+| `defineTool` / `defineResource` / `definePrompt` | `primitives.ts` | One error policy for tool calls, resource reads, template `list` and `complete` callbacks, and prompt gets. Unexpected errors are logged with a reference, and the client sees only the reference. With an `outputSchema`, tools must return matching `structuredContent`, checked at compile time |
 | Validated configuration | `config.ts` | Wrong settings, including your own in `settings.ts`, are reported together before the first request is served |
 | A server built at startup | `app.ts` | A registration mistake, such as a duplicate tool name, stops startup instead of failing every request |
 | Structured, redacting logger | `logger.ts` | JSON lines that Workers Logs can filter. Secrets are removed by field name and by common value shapes: bearer and basic credentials, JWTs, and credentials in URLs |
@@ -52,9 +52,10 @@ The SDK owns everything between the HTTP request and your handler: reading and b
 | | `Deps`, `createDeps` | What every handler receives, built once at startup |
 | | `createServer` | The per-request `McpServer` factory |
 | | `createVerifier` | How bearer tokens are checked in OAuth mode |
+| | `routes` | Extra HTTP routes (webhooks, OAuth callbacks), behind the Host and Origin checks |
 | `src/settings.ts` | `Settings` | Your own settings, validated with the platform's |
 
-Keep those names and shapes, and you can replace `platform/` with a newer template's copy without merging anything.
+Keep those names and shapes, and a newer template's `platform/` drops in. Changing `platform/` itself should be rare, for example to tune transport options in `app.ts`; keep such changes small so they're easy to carry forward.
 
 ## Decisions
 

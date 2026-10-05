@@ -43,9 +43,9 @@ The request body is larger than `MCP_MAX_REQUEST_BYTES` (4 MiB by default).
 
 The handler threw something unexpected. Search the logs for the reference: the `Unexpected tool failure` entry has the real error and its stack. Resources and prompts answer `Internal error (reference …)` the same way. To show the model a useful message for a failure you expect, return `toolError(...)`; see [tools.md](tools.md#errors).
 
-## The server won't start: "already registered"
+## "already registered"
 
-Two tools, resources or prompts share a name. The server builds itself once at startup to catch this; rename one of them.
+Two tools, resources or prompts share a name. The server builds itself once at startup to catch this: Bun stops with the error, and a Worker logs `The server failed to start` and answers every request with a 500. Rename one of them.
 
 ## `confirm-action` fails for some clients
 

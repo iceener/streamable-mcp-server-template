@@ -1,4 +1,5 @@
 import { createMcpHandler, type McpServerFactory } from '@modelcontextprotocol/server';
+import type { Hono } from 'hono';
 import { createDeps, createServer, createVerifier, type Deps, serverInfo } from '../server';
 import { createAuth } from './auth';
 import type { Config } from './config';
@@ -17,6 +18,8 @@ export interface AppOptions {
   deps?: Deps;
   /** Replace the server factory from `src/server.ts`. The template's own tests use this. */
   server?: (deps: Deps) => McpServerFactory;
+  /** Replace `routes` from `src/server.ts`. The template's own tests use this. */
+  routes?: (app: Hono, deps: Deps) => void;
 }
 
 /** Composition root: config in, app out. Everything is wired here and nowhere else. */
@@ -47,7 +50,13 @@ export function createApp(config: Config, options: AppOptions = {}): App {
     logger.warning('Authentication is off: anyone who can reach this URL can call every tool');
   }
 
-  const http = createHttpApp({ config, mcp, auth, logger });
+  const http = createHttpApp({
+    config,
+    mcp,
+    auth,
+    deps,
+    ...(options.routes && { addRoutes: options.routes }),
+  });
   return {
     fetch: async (request) => http.fetch(request),
     close: () => mcp.close(),

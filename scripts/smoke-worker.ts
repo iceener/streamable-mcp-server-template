@@ -19,7 +19,7 @@ const PUBLIC_URL = 'http://127.0.0.1/mcp';
 process.env.WRANGLER_SEND_METRICS = 'false';
 process.env.CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV = 'false';
 
-function startWorker(vars: Record<string, string>) {
+function startWorker(vars: Record<string, string>, logLevel: 'warn' | 'none' = 'warn') {
   return unstable_startWorker({
     config: `${root}wrangler.jsonc`,
     bindings: Object.fromEntries(Object.entries(vars).map(([name, value]) => [name, plain(value)])),
@@ -27,7 +27,7 @@ function startWorker(vars: Record<string, string>) {
       server: { hostname: '127.0.0.1', port: 0 },
       inspector: false,
       watch: false,
-      logLevel: 'none',
+      logLevel,
     },
   });
 }
@@ -76,11 +76,11 @@ try {
 }
 
 // Production settings with the auth decision missing: every request gets a generic 500.
-const misconfigured = await startWorker({
-  NODE_ENV: 'production',
-  MCP_PUBLIC_URL: 'https://mcp.example.com/mcp',
-  AUTH_MODE: '',
-});
+// Its configuration error is the point here, so keep it out of the output.
+const misconfigured = await startWorker(
+  { NODE_ENV: 'production', MCP_PUBLIC_URL: 'https://mcp.example.com/mcp', AUTH_MODE: '' },
+  'none',
+);
 try {
   const response = await fetch(new URL('/health', await misconfigured.url));
   assert.equal(response.status, 500);

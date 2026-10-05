@@ -31,8 +31,8 @@ import type { Deps } from '../server';
  *     reference, never the message, which may carry upstream URLs or data.
  *
  * The policy covers tool calls, resource reads, resource template `list` and `complete`
- * callbacks, and prompt gets. Completers inside `completable()` run outside it; keep them
- * to filtering local values.
+ * callbacks, and prompt gets. `completable()` attaches its completer as a property that
+ * can't be replaced, so completers run outside it; keep them to filtering local values.
  */
 export interface Definition {
   readonly name: string;
@@ -53,17 +53,24 @@ export interface ToolConfig<Input, Output> {
   _meta?: Record<string, unknown>;
 }
 
-/** A tool result whose `structuredContent` is checked against `outputSchema` at compile time. */
-export type ToolResult<Output extends StandardSchemaWithJSON> =
-  | (CallToolResult & { structuredContent?: StandardSchemaWithJSON.InferOutput<Output> })
-  | InputRequiredResult;
-
 /** An error result: text for the model, and no structured content. */
 export type ToolErrorResult = CallToolResult & { isError: true; structuredContent?: never };
 
+/**
+ * What a tool may return. With an `outputSchema`, every successful result must carry
+ * `structuredContent` matching it: the SDK validates the value you return, so it is typed
+ * as the schema's input.
+ */
+export type ToolResult<Output extends StandardSchemaWithJSON | undefined> =
+  | ToolErrorResult
+  | InputRequiredResult
+  | (Output extends StandardSchemaWithJSON
+      ? CallToolResult & { structuredContent: StandardSchemaWithJSON.InferInput<Output> }
+      : CallToolResult);
+
 export type ToolHandler<
   Input extends StandardSchemaWithJSON | undefined,
-  Output extends StandardSchemaWithJSON,
+  Output extends StandardSchemaWithJSON | undefined,
 > = Input extends StandardSchemaWithJSON
   ? (
       args: StandardSchemaWithJSON.InferOutput<Input>,
@@ -73,7 +80,7 @@ export type ToolHandler<
   : (ctx: ServerContext, deps: Deps) => MaybePromise<ToolResult<Output>>;
 
 export function defineTool<
-  Output extends StandardSchemaWithJSON,
+  Output extends StandardSchemaWithJSON | undefined = undefined,
   Input extends StandardSchemaWithJSON | undefined = undefined,
 >(
   name: string,
@@ -90,7 +97,12 @@ export function defineTool<
             'Tell the user; the server logs have the details.',
         );
       });
-      server.registerTool<Output, Input>(name, config, callback as ToolCallback<Input>);
+      // The SDK's overload wants a schema type for the output even when there is none.
+      server.registerTool<StandardSchemaWithJSON, Input>(
+        name,
+        config as ToolConfig<Input, StandardSchemaWithJSON>,
+        callback as ToolCallback<Input>,
+      );
     },
   };
 }

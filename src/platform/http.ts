@@ -4,17 +4,18 @@ import {
   originValidationResponse,
 } from '@modelcontextprotocol/server';
 import { Hono, type MiddlewareHandler } from 'hono';
-import { SERVER_ICON_PATH, SERVER_ICON_SVG, serverInfo } from '../server';
+import { type Deps, routes, SERVER_ICON_PATH, SERVER_ICON_SVG, serverInfo } from '../server';
 import type { Auth } from './auth';
 import type { Config } from './config';
 import { corsPreflight, withCors } from './cors';
-import type { Logger } from './logger';
 
 export interface HttpOptions {
   config: Config;
   mcp: McpHttpHandler;
   auth: Auth | undefined;
-  logger: Logger;
+  deps: Deps;
+  /** Defaults to `routes` from `src/server.ts`. */
+  addRoutes?: (app: Hono, deps: Deps) => void;
 }
 
 /**
@@ -25,9 +26,10 @@ export interface HttpOptions {
  *  3. Origin check on everything else.
  *  4. The MCP endpoint: CORS preflight, bearer gate, then the SDK handler.
  *
- * Add your own routes (webhooks, OAuth callbacks) here; they inherit steps 1 and 3.
+ * Your own routes come from `routes` in `src/server.ts`; they inherit steps 1 and 3.
  */
-export function createHttpApp({ config, mcp, auth, logger }: HttpOptions): Hono {
+export function createHttpApp({ config, mcp, auth, deps, addRoutes = routes }: HttpOptions): Hono {
+  const { logger } = deps;
   const app = new Hono();
   const mcpPath = config.publicUrl.pathname;
 
@@ -64,6 +66,8 @@ export function createHttpApp({ config, mcp, auth, logger }: HttpOptions): Hono 
         },
       }),
   );
+
+  addRoutes(app, deps);
 
   app.options(mcpPath, (c) => corsPreflight(c.req.raw));
 

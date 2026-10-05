@@ -82,9 +82,10 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\beyJ[\w-]*\.[\w-]+\.[\w-]*/g, '[REDACTED_JWT]'],
   [/(\/\/)[^/@\s:]+:[^/@\s]+@/g, '$1[REDACTED]@'],
   [
-    /(^|[?&\s])((?:access_token|api_key|apikey|client_secret|code|key|password|token)=)[^&#\s]+/gi,
-    '$1$2[REDACTED]',
+    /([?&](?:access_token|api_key|apikey|client_secret|code|key|password|token)=)[^&#\s]+/gi,
+    '$1[REDACTED]',
   ],
+  [/(^|\s)((?:access_token|api_key|apikey|client_secret|password|token)=)\S+/gi, '$1$2[REDACTED]'],
 ];
 
 /**

@@ -168,3 +168,21 @@ describe('startup', () => {
     );
   });
 });
+
+describe('routes from src/server.ts', () => {
+  test('sit behind the same Host and Origin checks as MCP', async () => {
+    const app = testApp(testConfig(), {
+      routes: (hono) => {
+        hono.post('/webhooks/test', (c) => c.json({ received: true }));
+      },
+    });
+
+    const accepted = await app.fetch(request('/webhooks/test', { method: 'POST' }));
+    expect(await accepted.json()).toEqual({ received: true });
+
+    const foreign = await app.fetch(
+      request('/webhooks/test', { method: 'POST', headers: { Host: 'evil.example' } }),
+    );
+    expect(foreign.status).toBe(403);
+  });
+});
