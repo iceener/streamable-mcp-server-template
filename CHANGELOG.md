@@ -18,6 +18,7 @@ Verified against `@modelcontextprotocol/server` and `@modelcontextprotocol/clien
 
 ### Changed
 
+- **Configuration values are trimmed,** and a blank value counts as unset. Before, a secret stored with a trailing newline, as a piped `wrangler secret put` can store it, reached the provider with the newline.
 - `createApp(config, options)` takes `{ runtime }` from entry points, or `{ deps }` in tests.
 - `platform/auth.ts` exports `createOAuthAuth` and `createBearerAuth` in place of `createAuth`.
 

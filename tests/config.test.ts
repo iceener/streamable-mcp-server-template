@@ -63,6 +63,22 @@ describe('defaults', () => {
   });
 });
 
+describe('values', () => {
+  test('are trimmed, so a secret stored with a newline still works', () => {
+    const settings = z.object({ API_KEY: z.string(), FLAG: z.string().optional() });
+    const config = parse({ API_KEY: ' key\n', FLAG: '\t' }, settings);
+    expect(config.settings).toEqual({ API_KEY: 'key' } as never);
+    expect(parse({ MCP_PUBLIC_URL: ' https://mcp.example.com/mcp\n' }).publicUrl.href).toBe(
+      'https://mcp.example.com/mcp',
+    );
+  });
+
+  test('a blank value counts as unset', () => {
+    const settings = z.object({ API_KEY: z.string({ error: 'API_KEY is required' }) });
+    expect(problems({ API_KEY: ' \n' }, settings)).toEqual(['API_KEY: API_KEY is required']);
+  });
+});
+
 describe('production', () => {
   test('requires an explicit public URL and auth decision, reported together', () => {
     expect(problems({ NODE_ENV: 'production' })).toEqual([

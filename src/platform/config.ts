@@ -93,15 +93,19 @@ const EnvSchema = z.object({
 type Env = z.infer<typeof EnvSchema>;
 
 /**
- * Parse `process.env` (Bun) or the Worker `env`. Empty values count as unset.
- * Every problem is reported at once, so a misconfigured deploy fails with one clear message.
+ * Parse `process.env` (Bun) or the Worker `env`. Text values are trimmed, because a secret
+ * stored with a trailing newline must not reach a provider with it; a blank value counts as
+ * unset. Every problem is reported at once, so a misconfigured deploy fails with one clear
+ * message.
  */
 export function parseConfig(
   source: Readonly<Record<string, unknown>>,
   settingsSchema: z.ZodType<Settings> = Settings,
 ): Config {
   const present = Object.fromEntries(
-    Object.entries(source).filter(([, value]) => value !== undefined && value !== ''),
+    Object.entries(source)
+      .map(([name, value]) => [name, typeof value === 'string' ? value.trim() : value] as const)
+      .filter(([, value]) => value !== undefined && value !== ''),
   );
   const problems: string[] = [];
   const env = parseLeniently(EnvSchema, present, problems);
@@ -183,7 +187,7 @@ function parseAuth(env: Env, problems: string[]): AuthConfig {
       return parseOAuth(env, problems);
     case 'bearer': {
       // Secrets pasted or piped in often end with a newline; it is never part of the token.
-      const token = env.BEARER_TOKEN?.trim() ?? '';
+      const token = env.BEARER_TOKEN ?? '';
       if (!token) problems.push('AUTH_MODE=bearer requires BEARER_TOKEN');
       else if (/\s/.test(token)) problems.push('BEARER_TOKEN must not contain whitespace');
       return { mode: 'bearer', token };
