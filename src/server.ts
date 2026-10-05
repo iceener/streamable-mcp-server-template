@@ -69,7 +69,8 @@ export function createVerifier(oauth: OAuthConfig, deps: Deps): OAuthTokenVerifi
 
 /**
  * Extra HTTP routes outside MCP: webhooks, OAuth callbacks, status pages. They sit behind the
- * same Host and Origin checks as the MCP endpoint, but not behind its bearer token check.
+ * same Host and Origin checks as the MCP endpoint, but not behind its bearer token check, and
+ * they get no CORS headers: browsers on other origins can't read them unless you add those.
  */
 export function routes(_app: Hono, _deps: Deps): void {
   // _app.post('/webhooks/provider', async (c) => { … });

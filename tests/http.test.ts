@@ -185,4 +185,22 @@ describe('routes from src/server.ts', () => {
     );
     expect(foreign.status).toBe(403);
   });
+
+  test("run after the MCP endpoint, so they can't intercept it", async () => {
+    const seen: string[] = [];
+    const app = testApp(testConfig(), {
+      routes: (hono) => {
+        hono.use(async (c, next) => {
+          seen.push(c.req.path);
+          await next();
+        });
+        hono.post('/mcp', (c) => c.text('shadowed'));
+      },
+    });
+
+    const response = await post(app, message('tools/list'));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toHaveProperty('result.tools');
+    expect(seen).toEqual([]);
+  });
 });

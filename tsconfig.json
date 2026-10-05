@@ -13,7 +13,8 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
-    "types": ["bun"]
+    "types": ["bun"],
+    "allowImportingTsExtensions": true
   },
   "include": ["src", "tests", "scripts"],
   "exclude": ["src/worker.ts"]

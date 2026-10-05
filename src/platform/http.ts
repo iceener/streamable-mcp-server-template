@@ -67,8 +67,6 @@ export function createHttpApp({ config, mcp, auth, deps, addRoutes = routes }: H
       }),
   );
 
-  addRoutes(app, deps);
-
   app.options(mcpPath, (c) => corsPreflight(c.req.raw));
 
   app.all(mcpPath, async (c) => {
@@ -81,6 +79,9 @@ export function createHttpApp({ config, mcp, auth, deps, addRoutes = routes }: H
       : await mcp.fetch(request);
     return withCors(request, response);
   });
+
+  // After the MCP endpoint, so nothing added here can run before its bearer token check.
+  addRoutes(app, deps);
 
   app.notFound((c) => c.json({ error: 'not_found' }, 404));
 

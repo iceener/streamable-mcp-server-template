@@ -1,16 +1,23 @@
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_MAX_REQUEST_BODY_SIZE } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { ConfigError, parseConfig } from '../src/platform/config';
+import { type Config, ConfigError, parseConfig } from '../src/platform/config';
 import type { Settings } from '../src/settings';
 
 /**
- * The problems `parseConfig` reports for `env`, or `[]` when it is valid. `settings` stands in
- * for a project's own `src/settings.ts`, which has a different shape from the template's.
+ * These tests cover the platform's own variables, so they parse with a stub in place of
+ * `src/settings.ts`: adding settings to your project never breaks them.
  */
+const NO_SETTINGS = z.object({});
+
+function parse(env: Record<string, unknown>, settings: z.ZodType = NO_SETTINGS): Config {
+  return parseConfig(env, settings as unknown as z.ZodType<Settings>);
+}
+
+/** The problems `parseConfig` reports for `env`, or `[]` when it is valid. */
 function problems(env: Record<string, unknown>, settings?: z.ZodType): string[] {
   try {
-    parseConfig(env, settings as z.ZodType<Settings> | undefined);
+    parse(env, settings);
     return [];
   } catch (error) {
     if (error instanceof ConfigError) return error.problems;
@@ -34,7 +41,7 @@ const oauth = {
 
 describe('defaults', () => {
   test('development works with no configuration at all', () => {
-    const config = parseConfig({});
+    const config = parse({});
 
     expect(config.environment).toBe('development');
     expect(config.publicUrl.href).toBe('http://127.0.0.1:3000/mcp');
@@ -46,11 +53,11 @@ describe('defaults', () => {
   });
 
   test('production allows only the public hostname by default', () => {
-    expect(parseConfig(production).allowedHosts).toEqual(['mcp.example.com']);
+    expect(parse(production).allowedHosts).toEqual(['mcp.example.com']);
   });
 
   test('empty values count as unset, and non-string Worker bindings are ignored', () => {
-    const config = parseConfig({ PORT: '', LOG_LEVEL: '', KV: { get() {} } });
+    const config = parse({ PORT: '', LOG_LEVEL: '', KV: { get() {} } });
     expect(config.port).toBe(3000);
     expect(config.logLevel).toBe('info');
   });
@@ -132,9 +139,10 @@ describe('allowlists', () => {
         `MCP_ALLOWED_HOSTS entries are lowercase hostnames without scheme or port, got "${entry}"`,
       ]);
     }
-    expect(parseConfig({ MCP_ALLOWED_HOSTS: ' 127.0.0.1, [::1] ,127.0.0.1' }).allowedHosts).toEqual(
-      ['127.0.0.1', '[::1]'],
-    );
+    expect(parse({ MCP_ALLOWED_HOSTS: ' 127.0.0.1, [::1] ,127.0.0.1' }).allowedHosts).toEqual([
+      '127.0.0.1',
+      '[::1]',
+    ]);
   });
 
   test('the Host check also covers the default public URL', () => {
@@ -144,9 +152,9 @@ describe('allowlists', () => {
   });
 
   test('origins may also admit every extension of a browser', () => {
-    expect(
-      parseConfig({ MCP_ALLOWED_ORIGIN_HOSTNAMES: 'moz-extension://*' }).allowedOrigins,
-    ).toEqual(['moz-extension://*']);
+    expect(parse({ MCP_ALLOWED_ORIGIN_HOSTNAMES: 'moz-extension://*' }).allowedOrigins).toEqual([
+      'moz-extension://*',
+    ]);
     expect(problems({ MCP_ALLOWED_ORIGIN_HOSTNAMES: 'https://*' })).toHaveLength(1);
     expect(problems({ MCP_ALLOWED_HOSTS: '127.0.0.1,moz-extension://*' })).toHaveLength(1);
   });
@@ -158,11 +166,11 @@ describe('oauth', () => {
       'AUTH_MODE=oauth requires OAUTH_ISSUER_URL, OAUTH_AUTHORIZATION_URL, OAUTH_TOKEN_URL',
     ]);
     const { OAUTH_JWKS_URL: _, ...withoutKeySet } = oauth;
-    expect(parseConfig(withoutKeySet).auth).toMatchObject({ mode: 'oauth', jwksUrl: undefined });
+    expect(parse(withoutKeySet).auth).toMatchObject({ mode: 'oauth', jwksUrl: undefined });
   });
 
   test('keeps the issuer exactly as written', () => {
-    const config = parseConfig({ ...oauth, OAUTH_ISSUER_URL: 'https://auth.example.com/tenant/' });
+    const config = parse({ ...oauth, OAUTH_ISSUER_URL: 'https://auth.example.com/tenant/' });
     expect(config.auth).toMatchObject({
       mode: 'oauth',
       issuer: 'https://auth.example.com/tenant/',
@@ -170,9 +178,7 @@ describe('oauth', () => {
   });
 
   test('parses scopes, separated by spaces or commas, and checks their syntax', () => {
-    expect(
-      parseConfig({ ...oauth, OAUTH_SCOPES: 'mcp, files:read  files:read' }).auth,
-    ).toMatchObject({
+    expect(parse({ ...oauth, OAUTH_SCOPES: 'mcp, files:read  files:read' }).auth).toMatchObject({
       scopes: ['mcp', 'files:read'],
     });
     expect(problems({ ...oauth, OAUTH_SCOPES: 'mcp "quoted"' })).toEqual([
@@ -193,11 +199,13 @@ test('names the variable and the accepted values for invalid enums', () => {
 });
 
 describe('settings', () => {
-  test('project settings from src/settings.ts are validated and exposed', () => {
-    expect(parseConfig({}).settings).toEqual({});
-    expect(parseConfig({ OPEN_METEO_API_KEY: 'key' }).settings).toEqual({
-      OPEN_METEO_API_KEY: 'key',
-    });
+  // Stub schemas stand in for src/settings.ts, so these tests don't depend on the sample's.
+  const Flags = z.object({ FEATURE: z.enum(['on', 'off']).default('off') });
+  const settingsOf = (env: Record<string, unknown>): unknown => parse(env, Flags).settings;
+
+  test('are validated and exposed as config.settings', () => {
+    expect(settingsOf({ FEATURE: 'on' })).toEqual({ FEATURE: 'on' });
+    expect(settingsOf({})).toEqual({ FEATURE: 'off' });
   });
 
   test('a missing required setting is reported with every other problem', () => {
@@ -219,9 +227,7 @@ describe('settings', () => {
     ]);
   });
 
-  test('their problems are reported with the platform ones', () => {
-    const reported = problems({ NODE_ENV: 'production', OPEN_METEO_API_KEY: 42 });
-    expect(reported.some((problem) => problem.startsWith('OPEN_METEO_API_KEY:'))).toBe(true);
-    expect(reported).toContain('MCP_PUBLIC_URL is required in production');
+  test('an invalid value is named', () => {
+    expect(problems({ FEATURE: 'maybe' }, Flags)[0]).toStartWith('FEATURE:');
   });
 });

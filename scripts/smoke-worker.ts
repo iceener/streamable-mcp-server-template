@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { unstable_startWorker } from 'wrangler';
+// Node runs this file directly, so the import names the .ts file.
+import { TEST_SETTINGS } from '../tests/settings.ts';
 
 /**
  * Run the real Worker in local workerd: once in OAuth mode against a loopback key server,
@@ -51,6 +53,7 @@ const token = await new SignJWT({ client_id: 'smoke', scope: 'mcp' })
   .sign(privateKey);
 
 const worker = await startWorker({
+  ...TEST_SETTINGS,
   NODE_ENV: 'test',
   MCP_PUBLIC_URL: PUBLIC_URL,
   MCP_MAX_REQUEST_BYTES: '1024',

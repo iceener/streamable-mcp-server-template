@@ -122,4 +122,6 @@ test('adds', async () => {
 
 `connect({ deps: testDeps({ weather: fakeWeather({ … }) }) })` replaces services with fakes. `connect({ authInfo })` calls as a specific caller, and `connect({ era: 'legacy' })` as a 2025-era client. `testDeps().logs` records what was logged. Test services on their own with a fake `fetch`, as `tests/services/weather.test.ts` does.
 
+When you add a service to `Deps`, give `testDeps` in `tests/helpers.ts` a fake for it. When you add a required setting to `src/settings.ts`, put a placeholder value in `tests/settings.ts`; tests and both smoke runs use it.
+
 `tests/http.test.ts`, `auth.test.ts` and `sdk-contract.test.ts` test the template itself against a small fixture server (`tests/fixture.ts`), so adding or removing tools doesn't affect them. `tests/server.test.ts` checks that everything in your index lists is served.

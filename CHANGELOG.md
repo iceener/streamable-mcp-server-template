@@ -33,7 +33,7 @@ A rewrite around the SDK's recommended remote-server setup. Projects started fro
   - Production requires `MCP_PUBLIC_URL` and `AUTH_MODE`.
   - Host and Origin allowlist entries are validated, and the Host allowlist must include the public hostname.
 - **Auth settings:** `AUTH_ENABLED` is replaced by `AUTH_MODE` (`none` or `oauth`). The token audience is always `MCP_PUBLIC_URL`. `OAUTH_JWKS_URL` is required only by the built-in JWT verifier.
-- **Startup:** the server is built once at startup, so registration mistakes stop it instead of failing every request.
+- **Startup:** the server is built once when the app is created, so registration mistakes are caught there: Bun refuses to start, and a Worker logs the error once and answers a generic 500.
 - **Key-set failures:** a key set that is unreachable, answers an error, or isn't a key set now answers `500` instead of `401 invalid_token`, and is logged at `error`.
 - **Bun:** `idleTimeout` is raised so SSE streams survive quiet periods. On shutdown, requests in progress get time to finish.
 - **CORS:** preflight accepts any request header from an allowed origin.

@@ -38,7 +38,7 @@ The SDK owns everything between the HTTP request and your handler: reading and b
 | Credentials removed before handlers | `http.ts` | The MCP spec forbids passing a client's token to other APIs. Handlers see the verified caller, but neither the token nor the `Authorization` header, so they can't pass it on by mistake |
 | `defineTool` / `defineResource` / `definePrompt` | `primitives.ts` | One error policy for tool calls, resource reads, template `list` and `complete` callbacks, and prompt gets. Unexpected errors are logged with a reference, and the client sees only the reference. With an `outputSchema`, tools must return matching `structuredContent`, checked at compile time |
 | Validated configuration | `config.ts` | Wrong settings, including your own in `settings.ts`, are reported together before the first request is served |
-| A server built at startup | `app.ts` | A registration mistake, such as a duplicate tool name, stops startup instead of failing every request |
+| A server built at startup | `app.ts` | A registration mistake, such as a duplicate tool name, is caught when the app is built: Bun refuses to start, and a Worker logs it once instead of failing each request with a different error |
 | Structured, redacting logger | `logger.ts` | JSON lines that Workers Logs can filter. Secrets are removed by field name and by common value shapes: bearer and basic credentials, JWTs, and credentials in URLs |
 | Bun `idleTimeout` | `bun.ts` | Bun's 10 s default drops SSE streams that go quiet between progress updates |
 

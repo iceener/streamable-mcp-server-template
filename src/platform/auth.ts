@@ -20,7 +20,7 @@ export interface Auth {
 /**
  * Build the boundary from the SDK's own pieces: `requireBearerAuth` checks the token,
  * `oauthMetadataResponse` publishes RFC 9728 metadata so clients can find the
- * authorization server. Fails at startup, not on the first request, if metadata is invalid.
+ * authorization server. Invalid metadata throws here, when the app is built.
  */
 export function createAuth(
   config: Config,

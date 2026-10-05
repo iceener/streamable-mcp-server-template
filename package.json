@@ -20,8 +20,8 @@
     "lint:fix": "biome check --write .",
     "test": "bun test",
     "test:smoke": "bun scripts/smoke-bun.ts && node --disable-warning=ExperimentalWarning scripts/smoke-worker.ts",
-    "types:worker": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler types --strict-vars=false",
-    "types:worker:check": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler types --strict-vars=false --check",
+    "types:worker": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false WRANGLER_HIDE_BANNER=true wrangler types --strict-vars=false",
+    "types:worker:check": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false WRANGLER_HIDE_BANNER=true wrangler types --strict-vars=false --check",
     "inspector": "npx -y @modelcontextprotocol/inspector@2.8.0",
     "token": "bun scripts/dev-token.ts"
   },

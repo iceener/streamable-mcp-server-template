@@ -6,6 +6,7 @@ import { createApp } from '../src/platform/app';
 import { parseConfig } from '../src/platform/config';
 import { createLogger } from '../src/platform/logger';
 import { createDeps, type Deps } from '../src/server';
+import { TEST_SETTINGS } from '../tests/settings';
 import { smoke } from './smoke-client';
 
 /**
@@ -22,7 +23,13 @@ async function withServer(
   run: (endpoint: URL) => Promise<void>,
   configure: (deps: Deps) => void = () => {},
 ): Promise<void> {
-  const config = parseConfig({ NODE_ENV: 'test', PORT: '0', MCP_PUBLIC_URL: PUBLIC_URL, ...env });
+  const config = parseConfig({
+    NODE_ENV: 'test',
+    PORT: '0',
+    MCP_PUBLIC_URL: PUBLIC_URL,
+    ...TEST_SETTINGS,
+    ...env,
+  });
   const deps = createDeps(config, createLogger('warning'));
   configure(deps);
   const app = createApp(config, { deps });

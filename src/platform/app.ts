@@ -29,7 +29,7 @@ export function createApp(config: Config, options: AppOptions = {}): App {
   const factory = (options.server ?? createServer)(deps);
 
   // Build one server now, so a registration mistake (a duplicate name, an invalid schema)
-  // stops startup instead of failing every request.
+  // is caught here: Bun refuses to start, and a Worker logs it once (see worker.ts).
   factory({ era: 'modern' });
 
   const mcp = createMcpHandler(factory, {

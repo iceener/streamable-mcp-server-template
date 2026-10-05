@@ -13,11 +13,12 @@ import type { LogFields, Logger } from '../src/platform/logger';
 import { createServer, type Deps } from '../src/server';
 import type { Forecast, Place, WeatherService } from '../src/services/weather';
 import { fixtureServer } from './fixture';
+import { TEST_SETTINGS } from './settings';
 
 export const PUBLIC_URL = 'http://127.0.0.1:3000/mcp';
 
 export function testConfig(env: Record<string, string> = {}): Config {
-  return parseConfig({ NODE_ENV: 'test', MCP_PUBLIC_URL: PUBLIC_URL, ...env });
+  return parseConfig({ NODE_ENV: 'test', MCP_PUBLIC_URL: PUBLIC_URL, ...TEST_SETTINGS, ...env });
 }
 
 export interface LogEntry {
