@@ -209,6 +209,16 @@ describe('bearer', () => {
       token: 'secret',
     });
   });
+
+  test('ignores the newline a pasted or piped secret often ends with', () => {
+    expect(parse({ AUTH_MODE: 'bearer', BEARER_TOKEN: ' secret\n' }).auth).toEqual({
+      mode: 'bearer',
+      token: 'secret',
+    });
+    expect(problems({ AUTH_MODE: 'bearer', BEARER_TOKEN: '\n' })).toEqual([
+      'AUTH_MODE=bearer requires BEARER_TOKEN',
+    ]);
+  });
 });
 
 describe('settings', () => {

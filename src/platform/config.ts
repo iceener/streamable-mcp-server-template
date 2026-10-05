@@ -181,11 +181,13 @@ function parseAuth(env: Env, problems: string[]): AuthConfig {
   switch (env.AUTH_MODE) {
     case 'oauth':
       return parseOAuth(env, problems);
-    case 'bearer':
-      if (!env.BEARER_TOKEN) problems.push('AUTH_MODE=bearer requires BEARER_TOKEN');
-      else if (/\s/.test(env.BEARER_TOKEN))
-        problems.push('BEARER_TOKEN must not contain whitespace');
-      return { mode: 'bearer', token: env.BEARER_TOKEN ?? '' };
+    case 'bearer': {
+      // Secrets pasted or piped in often end with a newline; it is never part of the token.
+      const token = env.BEARER_TOKEN?.trim() ?? '';
+      if (!token) problems.push('AUTH_MODE=bearer requires BEARER_TOKEN');
+      else if (/\s/.test(token)) problems.push('BEARER_TOKEN must not contain whitespace');
+      return { mode: 'bearer', token };
+    }
     default:
       return { mode: 'none' };
   }
