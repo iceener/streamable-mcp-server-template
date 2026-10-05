@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { McpServer } from '@modelcontextprotocol/server';
+import type { App } from '../src/platform/app';
+import { defineTool } from '../src/platform/primitives';
 import { FIXTURE } from './fixture';
-import { cleanup, message, PUBLIC_URL, post, testApp, testConfig } from './helpers';
+import { cleanup, message, PUBLIC_URL, post, testApp, testConfig, track } from './helpers';
 
 /**
  * Wire behavior of @modelcontextprotocol/server 2.3.0 that this template relies on.
@@ -155,4 +159,134 @@ describe('2025-era requests', () => {
     );
     expect(response.status).toBe(400);
   });
+});
+
+/**
+ * Clients send `MCP-Protocol-Version` on every request after initialize. A server that ignores
+ * the header works until a client with a version it doesn't support connects; these tests
+ * pin that such a client gets a clean 400 and that nothing runs.
+ */
+describe('MCP-Protocol-Version header', () => {
+  /** An app whose one tool counts its calls, to prove refused requests never reach it. */
+  function countingApp() {
+    let calls = 0;
+    const counted = defineTool('counted', { description: 'Counts its calls.' }, () => {
+      calls += 1;
+      return { content: [{ type: 'text', text: String(calls) }] };
+    });
+    const app = testApp(testConfig(), {
+      server: (deps) => () => {
+        const server = new McpServer(FIXTURE);
+        counted.register(server, deps);
+        return server;
+      },
+    });
+    return { app, calls: () => calls };
+  }
+
+  const callCounted = {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'counted', arguments: {} },
+  };
+
+  /** A 2025-era request after initialize: no `_meta` envelope, and the version in a header. */
+  function post2025(app: App, version?: string) {
+    const headers = new Headers({
+      Host: '127.0.0.1:3000',
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    });
+    if (version !== undefined) headers.set('MCP-Protocol-Version', version);
+    return app.fetch(
+      new Request(PUBLIC_URL, { method: 'POST', headers, body: JSON.stringify(callCounted) }),
+    );
+  }
+
+  /** The JSON-RPC message in a response, whether it came as JSON or as one SSE event. */
+  async function rpcBody(response: Response): Promise<unknown> {
+    const text = await response.text();
+    const event = text.split('\n').find((line) => line.startsWith('data: '));
+    return JSON.parse(event ? event.slice('data: '.length) : text);
+  }
+
+  test('2025-era: every version such a client can negotiate is served', async () => {
+    const { app, calls } = countingApp();
+    for (const version of ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05', '2024-10-07']) {
+      const response = await post2025(app, version);
+      expect(response.status).toBe(200);
+      expect(await rpcBody(response)).toMatchObject({
+        id: 2,
+        result: { content: [{ type: 'text' }] },
+      });
+    }
+    expect(calls()).toBe(5);
+  });
+
+  test('2025-era: without the header, the request is served as 2025-03-26', async () => {
+    // The spec's rule for clients that predate the header.
+    const { app, calls } = countingApp();
+    const response = await post2025(app);
+
+    expect(response.status).toBe(200);
+    expect(calls()).toBe(1);
+  });
+
+  test('2025-era: an unsupported or malformed version gets a clean 400, and nothing runs', async () => {
+    const { app, calls } = countingApp();
+    // Values the SDK reads as a later revision are refused because the body lacks that
+    // revision's per-request envelope (-32602). Any other value fails the 2025 transport's
+    // version check (-32000). Either way: a 400 with a JSON-RPC error, before any handler.
+    const cases: Array<[string, number]> = [
+      ['1999-01-01', -32000],
+      ['', -32000],
+      ['2099-01-01', -32602],
+      ['not-a-version', -32602],
+      ['2026-07-28', -32602],
+    ];
+    for (const [version, code] of cases) {
+      const response = await post2025(app, version);
+      expect(response.headers.get('Content-Type')).toStartWith('application/json');
+      await expectError(response, 400, code);
+    }
+    expect(calls()).toBe(0);
+  });
+
+  for (const era of ['legacy', 'auto'] as const) {
+    test(`the SDK client (${era}) sends the negotiated version on every request after initialize`, async () => {
+      const { app, calls } = countingApp();
+      const sent: Array<{ method: string; version: string | null }> = [];
+      const client = new Client(
+        { name: 'header-check', version: '1.0.0' },
+        { versionNegotiation: { mode: era } },
+      );
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(PUBLIC_URL), {
+          fetch: (url, init) => {
+            const headers = new Headers(init?.headers);
+            headers.set('Host', '127.0.0.1:3000');
+            const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+            sent.push({
+              method: body.method ?? init?.method ?? 'GET',
+              version: headers.get('MCP-Protocol-Version'),
+            });
+            return app.fetch(new Request(String(url), { ...init, headers }));
+          },
+        }),
+      );
+      track(client);
+      await client.listTools();
+      await client.callTool({ name: 'counted', arguments: {} });
+
+      const negotiated = client.getNegotiatedProtocolVersion() ?? null;
+      expect(negotiated).toBeString();
+      const afterInitialize = sent.filter(({ method }) => method !== 'initialize');
+      expect(afterInitialize.length).toBeGreaterThanOrEqual(2);
+      expect(afterInitialize).toEqual(
+        afterInitialize.map(({ method }) => ({ method, version: negotiated })),
+      );
+      expect(calls()).toBe(1);
+    });
+  }
 });

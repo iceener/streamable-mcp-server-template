@@ -35,6 +35,17 @@ The server couldn't fetch or read `OAUTH_JWKS_URL`: it was unreachable, answered
 
 The client sent `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` headers that don't match the request body, or left one out. Protocol 2026-07-28 requires the first two on every request, and `Mcp-Name` on requests that name something, such as `tools/call`, `prompts/get` and `resources/read`. The official SDK clients send them; a client that doesn't is out of date or hand-written.
 
+## 400 that names `MCP-Protocol-Version`
+
+After initialize, a 2025-era client sends the protocol version it negotiated in the `MCP-Protocol-Version` header. The server accepts `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05` and `2024-10-07`. A request without the header is served as `2025-03-26`, as the specification requires for older clients.
+
+Any other value gets `400` before a handler runs:
+
+- `-32000` "Unsupported protocol version": the client uses a version this server doesn't support.
+- `-32602` "missing the required per-request envelope": the header names `2026-07-28` or a later revision, but the body is in the 2025 format. The client, or a proxy in front of the server, mixed the two.
+
+`tests/sdk-contract.test.ts` pins this behavior.
+
 ## 413
 
 The request body is larger than `MCP_MAX_REQUEST_BYTES` (4 MiB by default).

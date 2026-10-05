@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Tests for the `MCP-Protocol-Version` header on 2025-era requests after initialize:
+  - every supported version is served;
+  - a missing header is served as `2025-03-26`;
+  - any other value gets a clean `400` before a handler runs.
+
+  A further test checks that the SDK client sends the negotiated version on every request, in both protocol eras.
+
 ## 2.0.0 — 2026-10-05
 
 Verified against `@modelcontextprotocol/server` and `@modelcontextprotocol/client` **2.3.0**, protocol `2026-07-28`, with 2025-era clients served through the SDK's stateless fallback.
