@@ -49,11 +49,14 @@ The SDK owns everything between the HTTP request and your handler: reading and b
 | File | Exports | Used for |
 |---|---|---|
 | `src/server.ts` | `serverInfo`, `SERVER_ICON_PATH`, `SERVER_ICON_SVG` | Identity: `/health`, `/icon.svg`, OAuth metadata |
-| | `Deps`, `createDeps` | What every handler receives, built once at startup |
+| | `Runtime`, `Deps`, `createDeps` | What every handler receives, built once at startup from the runtime's resources |
 | | `createServer` | The per-request `McpServer` factory |
 | | `createVerifier` | How bearer tokens are checked in OAuth mode |
+| | `oauthMetadata` | The authorization server metadata published in OAuth mode |
 | | `routes` | Extra HTTP routes (webhooks, OAuth callbacks), behind the Host and Origin checks |
 | `src/settings.ts` | `Settings` | Your own settings, validated with the platform's |
+
+The entry points, `src/bun.ts` and `src/worker.ts`, are yours too: they build the `Runtime` from what their platform provides (Workers bindings such as KV, D1 and Durable Objects, or local stand-ins on Bun), and `src/worker.ts` exports your Durable Object classes.
 
 Keep those names and shapes, and a newer template's `platform/` drops in. Changing `platform/` itself should be rare, for example to tune transport options in `app.ts`; keep such changes small so they're easy to carry forward.
 

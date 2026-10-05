@@ -1,7 +1,15 @@
 import { createMcpHandler, type McpServerFactory } from '@modelcontextprotocol/server';
 import type { Hono } from 'hono';
-import { createDeps, createServer, createVerifier, type Deps, serverInfo } from '../server';
-import { createAuth } from './auth';
+import {
+  createDeps,
+  createServer,
+  createVerifier,
+  type Deps,
+  oauthMetadata,
+  type Runtime,
+  serverInfo,
+} from '../server';
+import { type Auth, createBearerAuth, createOAuthAuth } from './auth';
 import type { Config } from './config';
 import { createHttpApp } from './http';
 import { createLogger } from './logger';
@@ -13,18 +21,23 @@ export interface App {
   close(): Promise<void>;
 }
 
-export interface AppOptions {
-  /** Replace the default dependencies, for example with fakes in tests. */
-  deps?: Deps;
+interface Overrides {
   /** Replace the server factory from `src/server.ts`. The template's own tests use this. */
   server?: (deps: Deps) => McpServerFactory;
   /** Replace `routes` from `src/server.ts`. The template's own tests use this. */
   routes?: (app: Hono, deps: Deps) => void;
 }
 
+/**
+ * Entry points pass the `runtime` their platform provides, and `createDeps` builds the
+ * dependencies from it. Tests pass ready `deps` instead.
+ */
+export type AppOptions = Overrides &
+  ({ runtime: Runtime; deps?: never } | { deps: Deps; runtime?: never });
+
 /** Composition root: config in, app out. Everything is wired here and nowhere else. */
-export function createApp(config: Config, options: AppOptions = {}): App {
-  const deps = options.deps ?? createDeps(config, createLogger(config.logLevel));
+export function createApp(config: Config, options: AppOptions): App {
+  const deps = options.deps ?? createDeps(config, createLogger(config.logLevel), options.runtime);
   const { logger } = deps;
   const factory = (options.server ?? createServer)(deps);
 
@@ -41,10 +54,7 @@ export function createApp(config: Config, options: AppOptions = {}): App {
     onerror: (error) => logger.warning('MCP request failed', { error }),
   });
 
-  const auth =
-    config.auth.mode === 'oauth'
-      ? createAuth(config, config.auth, createVerifier(config.auth, deps), serverInfo.title)
-      : undefined;
+  const auth = createAuthFor(config, deps);
 
   if (!auth && config.environment === 'production') {
     logger.warning('Authentication is off: anyone who can reach this URL can call every tool');
@@ -61,4 +71,19 @@ export function createApp(config: Config, options: AppOptions = {}): App {
     fetch: async (request) => http.fetch(request),
     close: () => mcp.close(),
   };
+}
+
+function createAuthFor(config: Config, deps: Deps): Auth | undefined {
+  switch (config.auth.mode) {
+    case 'oauth':
+      return createOAuthAuth(config, config.auth, {
+        verifier: createVerifier(config.auth, deps),
+        authorizationServer: oauthMetadata(config.auth, deps),
+        resourceName: serverInfo.title,
+      });
+    case 'bearer':
+      return createBearerAuth(config, config.auth.token);
+    case 'none':
+      return undefined;
+  }
 }

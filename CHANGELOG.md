@@ -1,15 +1,25 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-10-05
+
+Verified against `@modelcontextprotocol/server` and `@modelcontextprotocol/client` **2.3.0**.
 
 ### Added
 
+- **`AUTH_MODE=bearer`:** every client sends one shared secret, `BEARER_TOKEN`, compared in constant time. No OAuth discovery is published, so clients don't try to sign in.
+- **`Runtime` in `src/server.ts`:** resources only one runtime provides, such as Workers KV, D1 and Durable Objects. The entry points hand it in, and `createDeps(config, logger, runtime)` turns it into services.
+- **`oauthMetadata` in `src/server.ts`:** the authorization server metadata published in OAuth mode. The default copies your external authorization server's endpoints; a server that is its own authorization server returns its complete metadata. docs/auth.md describes the proxy pattern.
 - Tests for the `MCP-Protocol-Version` header on 2025-era requests after initialize:
   - every supported version is served;
   - a missing header is served as `2025-03-26`;
   - any other value gets a clean `400` before a handler runs.
 
   A further test checks that the SDK client sends the negotiated version on every request, in both protocol eras.
+
+### Changed
+
+- `createApp(config, options)` takes `{ runtime }` from entry points, or `{ deps }` in tests.
+- `platform/auth.ts` exports `createOAuthAuth` and `createBearerAuth` in place of `createAuth`.
 
 ## 2.0.0 — 2026-10-05
 

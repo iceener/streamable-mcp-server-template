@@ -1,12 +1,14 @@
 /**
  * The project's half of the template. `platform/` relies on exactly these exports:
- * `serverInfo`, `SERVER_ICON_PATH`, `SERVER_ICON_SVG`, `Deps`, `createDeps`, `createServer`,
- * `createVerifier` and `routes`. Change what they contain, but keep their names and shapes.
+ * `serverInfo`, `SERVER_ICON_PATH`, `SERVER_ICON_SVG`, `Runtime`, `Deps`, `createDeps`,
+ * `createServer`, `createVerifier`, `oauthMetadata` and `routes`. Change what they contain,
+ * but keep their names and shapes.
  */
 import {
   type CacheHint,
   McpServer,
   type McpServerFactory,
+  type OAuthMetadata,
   type OAuthTokenVerifier,
 } from '@modelcontextprotocol/server';
 import type { Hono } from 'hono';
@@ -22,7 +24,7 @@ import { tools } from './tools';
 export const serverInfo = {
   name: 'mcp-server-template',
   title: 'MCP Server Template',
-  version: '2.0.0',
+  version: '2.1.0',
   description: 'Weather forecasts, plus a reference set of MCP tools, resources and prompts.',
   websiteUrl: 'https://github.com/iceener/streamable-mcp-server-template',
 };
@@ -37,6 +39,13 @@ export const SERVER_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox=
   <path d="M18 44V20h7l7 10 7-10h7v24h-7V31l-7 10-7-10v13z" fill="#fff"/>
 </svg>`;
 
+/**
+ * Resources that only one runtime provides, handed in by the entry points: Workers bindings
+ * such as KV, D1 and Durable Objects from `src/worker.ts`, and local stand-ins from
+ * `src/bun.ts`. `createDeps` turns them into services. The sample needs none.
+ */
+export type Runtime = Record<string, never>;
+
 /** Everything tools, resources and prompts may use. Built once, shared by every request. */
 export interface Deps {
   config: Config;
@@ -44,7 +53,7 @@ export interface Deps {
   weather: WeatherService;
 }
 
-export function createDeps(config: Config, logger: Logger): Deps {
+export function createDeps(config: Config, logger: Logger, _runtime: Runtime): Deps {
   return {
     config,
     logger,
@@ -68,9 +77,29 @@ export function createVerifier(oauth: OAuthConfig, deps: Deps): OAuthTokenVerifi
 }
 
 /**
+ * The authorization server metadata (RFC 8414) published at
+ * /.well-known/oauth-authorization-server when `AUTH_MODE=oauth`, for clients that look for
+ * it on this origin. By default, the main endpoints of your external authorization server.
+ * If this server is its own authorization server (for example, a proxy in front of a
+ * provider's OAuth), return its complete metadata; docs/auth.md shows how.
+ */
+export function oauthMetadata(oauth: OAuthConfig, _deps: Deps): OAuthMetadata {
+  return {
+    issuer: oauth.issuer,
+    authorization_endpoint: oauth.authorizationUrl.href,
+    token_endpoint: oauth.tokenUrl.href,
+    ...(oauth.registrationUrl && { registration_endpoint: oauth.registrationUrl.href }),
+    // MCP requires the authorization code flow with PKCE S256.
+    response_types_supported: ['code'],
+    code_challenge_methods_supported: ['S256'],
+  };
+}
+
+/**
  * Extra HTTP routes outside MCP: webhooks, OAuth callbacks, status pages. They sit behind the
  * same Host and Origin checks as the MCP endpoint, but not behind its bearer token check, and
- * they get no CORS headers: browsers on other origins can't read them unless you add those.
+ * they get no CORS headers: browsers on other origins can't read them unless you add those
+ * (`cors()` from `hono/cors`; the Origin is already checked).
  */
 export function routes(_app: Hono, _deps: Deps): void {
   // _app.post('/webhooks/provider', async (c) => { … });

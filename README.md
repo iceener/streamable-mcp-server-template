@@ -82,7 +82,7 @@ scripts/          Smoke tests on real network sockets, and a local token issuer
 
 You change `server.ts`, `settings.ts`, and the four folders. The `platform/` folder is template code. Do not change it unless it is necessary.
 
-`platform/` uses only a fixed set of names from `server.ts` and `settings.ts`. This lets you replace `platform/` with the version from a newer template. `server.ts` has hooks for settings, token verification, and extra HTTP routes.
+`platform/` uses only a fixed set of names from `server.ts` and `settings.ts`. This lets you replace `platform/` with the version from a newer template. `server.ts` has hooks for settings, runtime resources (for example Workers KV), token verification, authorization server metadata, and extra HTTP routes.
 
 ## Add a tool
 
@@ -139,7 +139,8 @@ The server identity (name, version, and instructions) is in `src/server.ts`. The
 | `MCP_PUBLIC_URL` | `http://127.0.0.1:$PORT/mcp` | The public URL of the endpoint. Production requires it. |
 | `MCP_ALLOWED_HOSTS` | The host of the public URL, and the loopback hosts outside production | The `Host` headers that the server accepts |
 | `MCP_ALLOWED_ORIGIN_HOSTNAMES` | The host of the public URL, and the loopback hosts outside production | The browser `Origin` headers that the server accepts |
-| `AUTH_MODE` | `none` | `none` or `oauth`. Production requires it. |
+| `AUTH_MODE` | `none` | `none`, `bearer`, or `oauth`. Production requires it. |
+| `BEARER_TOKEN` | | The shared token when `AUTH_MODE=bearer`. Store it as a secret. |
 | `OAUTH_*` | | The settings of your authorization server. Refer to [docs/auth.md](docs/auth.md). |
 | `MCP_LEGACY_MODE` | `stateless` | Set `reject` to accept only `2026-07-28` clients. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warning`, or `error` |
@@ -153,7 +154,13 @@ If the configuration is not valid, the server shows all problems at the same tim
 
 ## Authentication
 
-When `AUTH_MODE=oauth`, the server is an OAuth resource server. The server publishes metadata that tells clients where your authorization server is. The server accepts only the tokens that your authorization server issued for this server URL.
+The server has three authentication modes:
+
+- `none`: The server accepts all requests.
+- `bearer`: All clients send the same secret token (`BEARER_TOKEN`) in the `Authorization` header.
+- `oauth`: The server is an OAuth resource server. The server publishes metadata that tells clients where your authorization server is. The server accepts only the tokens that your authorization server issued for this server URL.
+
+The server can also be its own authorization server, for example in front of the OAuth of an external provider. For this procedure, refer to [docs/auth.md](docs/auth.md).
 
 To test OAuth without an authorization server, run `bun run token`. This command starts a local key server. It shows a token and the settings to use. For real providers and scopes for each tool, refer to [docs/auth.md](docs/auth.md).
 

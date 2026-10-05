@@ -34,7 +34,13 @@ export interface Config {
   settings: Settings;
 }
 
-export type AuthConfig = { mode: 'none' } | OAuthConfig;
+export type AuthConfig = { mode: 'none' } | BearerConfig | OAuthConfig;
+
+/** Clients send one shared secret as `Authorization: Bearer <token>`. No OAuth discovery. */
+export interface BearerConfig {
+  mode: 'bearer';
+  token: string;
+}
 
 /** This server is an OAuth resource server: an external authorization server issues tokens. */
 export interface OAuthConfig {
@@ -74,7 +80,8 @@ const EnvSchema = z.object({
   MCP_ALLOWED_ORIGIN_HOSTNAMES: z.string().optional(),
   MCP_LEGACY_MODE: z.enum(['stateless', 'reject']).default('stateless'),
   MCP_MAX_REQUEST_BYTES: z.coerce.number().int().positive().default(DEFAULT_MAX_REQUEST_BODY_SIZE),
-  AUTH_MODE: z.enum(['none', 'oauth']).optional(),
+  AUTH_MODE: z.enum(['none', 'bearer', 'oauth']).optional(),
+  BEARER_TOKEN: z.string().optional(),
   OAUTH_ISSUER_URL: z.string().optional(),
   OAUTH_AUTHORIZATION_URL: z.string().optional(),
   OAUTH_TOKEN_URL: z.string().optional(),
@@ -138,7 +145,7 @@ function buildConfig(env: Env, settings: Settings, problems: string[]): Config {
 
   if (production && !env.AUTH_MODE) {
     problems.push(
-      'AUTH_MODE is required in production: "oauth", or "none" to serve without authentication',
+      'AUTH_MODE is required in production: "oauth", "bearer", or "none" to serve without authentication',
     );
   }
 
@@ -165,9 +172,23 @@ function buildConfig(env: Env, settings: Settings, problems: string[]): Config {
       }) ?? defaultHostnames,
     legacy: env.MCP_LEGACY_MODE,
     maxRequestBytes: env.MCP_MAX_REQUEST_BYTES,
-    auth: env.AUTH_MODE === 'oauth' ? parseOAuth(env, problems) : { mode: 'none' },
+    auth: parseAuth(env, problems),
     settings,
   };
+}
+
+function parseAuth(env: Env, problems: string[]): AuthConfig {
+  switch (env.AUTH_MODE) {
+    case 'oauth':
+      return parseOAuth(env, problems);
+    case 'bearer':
+      if (!env.BEARER_TOKEN) problems.push('AUTH_MODE=bearer requires BEARER_TOKEN');
+      else if (/\s/.test(env.BEARER_TOKEN))
+        problems.push('BEARER_TOKEN must not contain whitespace');
+      return { mode: 'bearer', token: env.BEARER_TOKEN ?? '' };
+    default:
+      return { mode: 'none' };
+  }
 }
 
 function parseOAuth(env: Env, problems: string[]): OAuthConfig {

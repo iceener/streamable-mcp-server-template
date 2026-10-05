@@ -2,10 +2,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { base64url, exportJWK, generateKeyPair, type JWTPayload, SignJWT } from 'jose';
 import { type App, createApp } from '../src/platform/app';
-import { createAuth } from '../src/platform/auth';
+import { createOAuthAuth } from '../src/platform/auth';
 import { ConfigError } from '../src/platform/config';
 import { createJwtVerifier } from '../src/platform/jwt';
-import { serverInfo } from '../src/server';
+import { oauthMetadata, serverInfo } from '../src/server';
 import {
   cleanup,
   type LogEntry,
@@ -282,7 +282,11 @@ describe('audience, checked twice', () => {
         resource: new URL('https://other.example/mcp'),
       }),
     };
-    const { gate } = createAuth(config, config.auth, lenient, 'test');
+    const { gate } = createOAuthAuth(config, config.auth, {
+      verifier: lenient,
+      authorizationServer: oauthMetadata(config.auth, testDeps({ config })),
+      resourceName: 'test',
+    });
 
     const result = await gate(
       new Request(PUBLIC_URL, { headers: { Authorization: 'Bearer anything' } }),
@@ -300,4 +304,74 @@ test('the default JWT verifier needs OAUTH_JWKS_URL', () => {
     OAUTH_TOKEN_URL: `${issuer}/token`,
   });
   expect(() => createApp(config, { deps: testDeps({ config }) })).toThrow(ConfigError);
+});
+
+describe('AUTH_MODE=bearer', () => {
+  const TOKEN = 'a-long-random-shared-secret';
+  const bearerApp = () => testApp(testConfig({ AUTH_MODE: 'bearer', BEARER_TOKEN: TOKEN }));
+
+  test('the shared token gets through; handlers see the caller but not the token', async () => {
+    const client = await connectWith(bearerApp(), TOKEN);
+    const result = await client.callTool({ name: 'caller', arguments: {} });
+
+    expect(JSON.parse(textOf(result))).toEqual({
+      authInfo: expect.objectContaining({ token: '', clientId: 'bearer', resource: PUBLIC_URL }),
+      authorization: null,
+    });
+  });
+
+  test('a missing or wrong token gets 401 with no OAuth metadata to follow', async () => {
+    for (const headers of [{}, bearer('wrong'), bearer(`${TOKEN}x`)]) {
+      const response = await post(bearerApp(), message('tools/list'), headers);
+      expect(response.status).toBe(401);
+      const challenge = response.headers.get('WWW-Authenticate') ?? '';
+      expect(challenge).toStartWith('Bearer ');
+      expect(challenge).not.toContain('resource_metadata');
+    }
+  });
+
+  test('publishes no OAuth discovery documents', async () => {
+    const app = bearerApp();
+    for (const path of [
+      '/.well-known/oauth-protected-resource/mcp',
+      '/.well-known/oauth-authorization-server',
+    ]) {
+      const response = await app.fetch(
+        new Request(`http://127.0.0.1:3000${path}`, { headers: { Host: '127.0.0.1:3000' } }),
+      );
+      expect(response.status).toBe(404);
+    }
+  });
+});
+
+describe('oauthMetadata', () => {
+  test('what the project returns is published as the authorization server metadata', async () => {
+    const config = testConfig({
+      AUTH_MODE: 'oauth',
+      OAUTH_ISSUER_URL: 'http://127.0.0.1:3000',
+      OAUTH_AUTHORIZATION_URL: 'http://127.0.0.1:3000/authorize',
+      OAUTH_TOKEN_URL: 'http://127.0.0.1:3000/token',
+    });
+    if (config.auth.mode !== 'oauth') throw new Error('expected oauth');
+    const proxy = createOAuthAuth(config, config.auth, {
+      verifier: { verifyAccessToken: async () => Promise.reject(new Error('unused')) },
+      authorizationServer: {
+        ...oauthMetadata(config.auth, testDeps({ config })),
+        revocation_endpoint: 'http://127.0.0.1:3000/revoke',
+        grant_types_supported: ['authorization_code', 'refresh_token'],
+        token_endpoint_auth_methods_supported: ['none'],
+      },
+      resourceName: 'proxy',
+    });
+
+    const response = proxy.metadata(
+      new Request('http://127.0.0.1:3000/.well-known/oauth-authorization-server'),
+    );
+    expect(await response?.json()).toMatchObject({
+      issuer: 'http://127.0.0.1:3000',
+      revocation_endpoint: 'http://127.0.0.1:3000/revoke',
+      grant_types_supported: ['authorization_code', 'refresh_token'],
+      token_endpoint_auth_methods_supported: ['none'],
+    });
+  });
 });

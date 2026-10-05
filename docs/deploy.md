@@ -22,6 +22,8 @@ bun run deploy                       # wrangler deploy --env production
 
 On `workers.dev` the URL is `https://<name>.<your-subdomain>.workers.dev/mcp`. To use your own domain, add a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) route to `env.production` and use that hostname everywhere above.
 
+**Bindings.** KV namespaces, D1 databases and Durable Object bindings are declared per environment: put them under `env.production` as well as at the top level, because Wrangler doesn't copy bindings into environments. Durable Object `migrations` are the exception: environments inherit the top-level list. Add each binding to `Runtime` in `src/server.ts`, pass it from `env` in `src/worker.ts`, and export Durable Object classes from `src/worker.ts`. Only append to `migrations`, never edit an applied entry: Cloudflare records which tags ran.
+
 **Secrets.** Declare API keys in `src/settings.ts`, then store each value with `bunx wrangler secret put NAME --env production`. Never put secrets in `vars`. For local `wrangler dev`, put them in `.dev.vars`; it is gitignored.
 
 **Types.** After you change `wrangler.jsonc`, run `bun run types:worker`. `bun run check` fails while the generated `worker-configuration.d.ts` is out of date.

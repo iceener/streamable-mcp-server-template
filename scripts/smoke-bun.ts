@@ -30,7 +30,7 @@ async function withServer(
     ...TEST_SETTINGS,
     ...env,
   });
-  const deps = createDeps(config, createLogger('warning'));
+  const deps = createDeps(config, createLogger('warning'), {});
   configure(deps);
   const app = createApp(config, { deps });
   const server = serve(config, app);

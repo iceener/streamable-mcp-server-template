@@ -67,7 +67,7 @@ describe('production', () => {
   test('requires an explicit public URL and auth decision, reported together', () => {
     expect(problems({ NODE_ENV: 'production' })).toEqual([
       'MCP_PUBLIC_URL is required in production',
-      'AUTH_MODE is required in production: "oauth", or "none" to serve without authentication',
+      'AUTH_MODE is required in production: "oauth", "bearer", or "none" to serve without authentication',
     ]);
   });
 
@@ -196,6 +196,19 @@ describe('oauth', () => {
 test('names the variable and the accepted values for invalid enums', () => {
   expect(problems({ AUTH_MODE: 'basic' })[0]).toStartWith('AUTH_MODE:');
   expect(problems({ PORT: 'eighty' })[0]).toStartWith('PORT:');
+});
+
+describe('bearer', () => {
+  test('needs a token without whitespace', () => {
+    expect(problems({ AUTH_MODE: 'bearer' })).toEqual(['AUTH_MODE=bearer requires BEARER_TOKEN']);
+    expect(problems({ AUTH_MODE: 'bearer', BEARER_TOKEN: 'two words' })).toEqual([
+      'BEARER_TOKEN must not contain whitespace',
+    ]);
+    expect(parse({ AUTH_MODE: 'bearer', BEARER_TOKEN: 'secret' }).auth).toEqual({
+      mode: 'bearer',
+      token: 'secret',
+    });
+  });
 });
 
 describe('settings', () => {
