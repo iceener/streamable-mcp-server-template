@@ -1,0 +1,21 @@
+name: MCP Trust Check
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-trust:
+    # Runs only after you set the MCP_ENDPOINT repository variable, so CI stays green out of the box.
+    if: ${{ vars.MCP_ENDPOINT != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: xka0085-byte/mcp-doctor@v1
+        with:
+          endpoint: ${{ vars.MCP_ENDPOINT }}
+          mode: schema
+          format: markdown
+          fail-on: false # informational by default; set to true once you want the report to gate merges
